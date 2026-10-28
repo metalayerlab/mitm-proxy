@@ -16,6 +16,8 @@ import ipaddress
 import json
 import logging
 import ssl
+import time
+import uuid
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from typing import Any
@@ -42,6 +44,7 @@ from mitm_proxy.tls.upstream import UpstreamContexts
 from mitm_proxy.upstream.pool import ConnectionPool, Connector, Target, TCPConnector
 
 log = logging.getLogger(__name__)
+relayed_log = logging.getLogger("mitm_proxy.relayed")  # proxy.access_log_relayed (0005)
 
 
 def config_hash(config: Config) -> str:
@@ -198,6 +201,8 @@ class ProxyServer:
             target=None,
             scope=snap.allowlist,
             server_timing=snap.config.server_timing,
+            access_log=snap.config.access_log,
+            access_log_relayed=snap.config.access_log_relayed,
         )
 
     # Tunnels
@@ -206,22 +211,25 @@ class ProxyServer:
         snap = self.snapshot
         config = snap.config
         idle = config.idle_timeout_ms / 1000
+        logged = config.access_log_relayed
         decision = decide(conn.target_host, snap.allowlist, None)
         if decision is Decision.RELAY_OUT_OF_SCOPE:
-            await self._relay(conn, b"", decision, accepted=False, idle=idle)
+            await self._relay(conn, b"", decision, accepted=False, idle=idle, logged=logged)
             return
         await conn.accept()
         peeked = await peek(conn.stream, config.peek_timeout_ms / 1000)
         decision = decide(conn.target_host, snap.allowlist, peeked)
         if decision is not Decision.INTERCEPT or peeked.hello is None:
-            await self._relay(conn, peeked.data, decision, accepted=True, idle=idle)
+            await self._relay(conn, peeked.data, decision, accepted=True, idle=idle, logged=logged)
             return
 
         sni = peeked.hello.sni
         try:
             cert_host = normalize_host(sni or conn.target_host)
         except ValueError:
-            await self._relay(conn, peeked.data, Decision.RELAY_NOT_TLS, accepted=True, idle=idle)
+            await self._relay(
+                conn, peeked.data, Decision.RELAY_NOT_TLS, accepted=True, idle=idle, logged=logged
+            )
             return
         tls = TLSStream(
             conn.stream, self.ca.server_context(cert_host), server_side=True, initial=peeked.data
@@ -251,6 +259,8 @@ class ProxyServer:
             pipeline=snap.pipeline,
             target=Target(conn.target_host, conn.target_port, tls=True, sni=sni),
             server_timing=config.server_timing,
+            access_log=config.access_log,
+            access_log_relayed=config.access_log_relayed,
         )
 
         async def handler(incoming: IncomingRequest, responder: Responder) -> None:
@@ -281,23 +291,45 @@ class ProxyServer:
         *,
         accepted: bool,
         idle: float,
+        logged: bool = False,
     ) -> None:
         self.metrics.tunnels.inc(decision.value)
         target = Target(conn.target_host, conn.target_port, tls=False)
+        started = time.monotonic()
+        reason, counts = decision.value, (0, 0)
         try:
-            upstream = await self.connector(target, (), self.pool.connect_timeout)
-        except UpstreamError as e:
-            log.info("tunnel to %s:%d failed: %s", conn.target_host, conn.target_port, e)
-            if accepted:
-                await conn.stream.close()
-            else:
-                await conn.reject(504 if isinstance(e, UpstreamTimeout) else 502, str(e))
-            return
-        if not accepted:
-            await conn.accept()
-        if peeked:
-            await upstream.stream.write(peeked)
-        await relay(conn.stream, upstream.stream, idle_timeout=idle)
+            try:
+                upstream = await self.connector(target, (), self.pool.connect_timeout)
+            except UpstreamError as e:
+                log.info("tunnel to %s:%d failed: %s", conn.target_host, conn.target_port, e)
+                status = 504 if isinstance(e, UpstreamTimeout) else 502
+                reason = f"error:{status}"
+                if accepted:
+                    await conn.stream.close()
+                else:
+                    await conn.reject(status, str(e))
+                return
+            if not accepted:
+                await conn.accept()
+            if peeked:
+                await upstream.stream.write(peeked)
+            up, down = await relay(conn.stream, upstream.stream, idle_timeout=idle)
+            counts = (len(peeked) + up, down)
+        finally:
+            if logged:
+                # Synchronous, so a tunnel cut short by shutdown is still logged.
+                relayed_log.info(
+                    "tunnel %s %s:%d %s:%d %s up=%d down=%d total=%.1fms",
+                    uuid.uuid4().hex,
+                    conn.client_addr[0],
+                    conn.client_addr[1],
+                    conn.target_host,
+                    conn.target_port,
+                    reason,
+                    counts[0],
+                    counts[1],
+                    (time.monotonic() - started) * 1000,
+                )
 
     # Shutdown and status
 

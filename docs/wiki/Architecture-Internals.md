@@ -55,7 +55,6 @@ flowchart LR
 | `mitm_proxy/http/h2.py` | HTTP/2 on h2: client-facing server and upstream client, flow control |
 | `mitm_proxy/exchange.py` | One request: flow, middleware, framing, upstream, response; WebSocket hand-off |
 | `mitm_proxy/pipeline.py` | The middleware API (`Middleware`, `Action`) and the runner |
-| `mitm_proxy/middleware/log.py` | `FlowLogger`, the built-in `log` middleware |
 | `mitm_proxy/upstream/pool.py` | The connection pool and the TCP/TLS connector |
 | `mitm_proxy/auth.py` | Basic proxy authentication |
 | `mitm_proxy/metrics.py` | Prometheus text exposition |
@@ -73,7 +72,9 @@ Following `curl --proxy … https://example.org/` with `example.org` listed:
 6. **Upstream.** The pool returns a connection to `(host, port, SNI)`: an HTTP/2 one is shared by concurrent flows, an HTTP/1.1 one is leased to one request at a time. A reused HTTP/1.1 connection that fails before any response byte is retried once on a new connection, for idempotent requests with a replayable body.
 7. **Back.** The response head becomes `flow.response`; `on_response` and the response chunk hooks run; `framing.plan` picks the framing; the responder writes it.
 
-**Timings:** `Flow.timings` is stamped along the way on the `time.monotonic()` clock: by `exchange.py` at each stage (the request body read, the pool lease, the request sent upstream through a wrapper on the body iterator, the response head, the end), and by `FlowPipeline` around every hook it awaits (per middleware). That's a few clock reads per flow. With `proxy.server_timing` on, `exchange.server_timing` turns them into a `Server-Timing` field, added after the response hooks and the framing headers, just before `responder.start` (and in `send_simple` for denies and proxy errors).
+**Timings:** `Flow.timings` is stamped along the way on the `time.monotonic()` clock: by `exchange.py` at each stage (the request body read, the pool lease, the request sent upstream through a wrapper on the body iterator, the response head, the end), and by `FlowPipeline` around every hook it awaits (per middleware). That's a few clock reads per flow.
+
+**Access log:** `exchange.handle` wraps the client's request body in a byte counter and the client's `Responder` in a `_Recorder` (status sent, body bytes, finished or not). The exchange marks the path it took (origin, local, denied, error), and the `finally` that stamps `complete` writes the line: a synchronous log call, so it's also written when the task is cancelled. An unfinished response is `aborted`. Relayed tunnels are logged from `ProxyServer._relay`, using the counts `relay()` returns. With `proxy.server_timing` on, `exchange.server_timing` turns them into a `Server-Timing` field, added after the response hooks and the framing headers, just before `responder.start` (and in `send_simple` for denies and proxy errors).
 
 **State** is in memory only: the snapshot, the CA's LRU of server contexts, the pool. The root CA is the only thing on disk (`<state_dir>/ca/`); the shared leaf key sits encrypted in a private temporary directory while the process runs.
 

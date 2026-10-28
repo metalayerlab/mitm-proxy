@@ -128,6 +128,8 @@ class Bench:
         target: Target | None = DEFAULT_TARGET,
         scope: Allowlist | None = None,
         server_timing: bool = False,
+        access_log: bool = False,
+        access_log_relayed: bool = False,
     ) -> ExchangeContext:
         return ExchangeContext(
             pool=self.pool,
@@ -140,6 +142,8 @@ class Bench:
             target=target,
             scope=scope,
             server_timing=server_timing,
+            access_log=access_log,
+            access_log_relayed=access_log_relayed,
         )
 
     def proxy(self, ctx: ExchangeContext, proxy_mode: ProxyMode | None = None) -> MemoryStream:

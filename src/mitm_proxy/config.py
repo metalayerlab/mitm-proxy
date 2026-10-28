@@ -39,8 +39,6 @@ ENV_PREFIX = "MITM_PROXY_"
 CONFIG_ENV = f"{ENV_PREFIX}CONFIG"
 DEFAULT_CONFIG_PATH = Path("/etc/mitm-proxy/config.yaml")
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
-# The built-in middleware, always available under this name.
-BUILTIN_MIDDLEWARE = {"log": "mitm_proxy.middleware.log:FlowLogger"}
 
 Value = str | int | bool | tuple[str, ...]
 
@@ -99,6 +97,17 @@ SETTINGS: tuple[Setting, ...] = (
         "On SIGTERM, how long in-flight connections get to finish.",
     ),
     Setting(
+        "proxy.access_log",
+        False,
+        "Log one line per intercepted flow (`mitm_proxy.flows`): sizes, timings and how it ended.",
+    ),
+    Setting(
+        "proxy.access_log_relayed",
+        False,
+        "Log one line per flow relayed without interception (`mitm_proxy.relayed`): tunnels to "
+        "unlisted hosts and plain HTTP to them. Records every destination.",
+    ),
+    Setting(
         "proxy.server_timing",
         False,
         "Add a `Server-Timing` header (connect, origin, middleware, proxy times) to every "
@@ -114,8 +123,7 @@ SETTINGS: tuple[Setting, ...] = (
     Setting(
         "middleware.available",
         "",
-        "Installed middleware that may run, as `name=module:attribute`. "
-        "The built-in `log` is always available.",
+        "Installed middleware that may run, as `name=module:attribute`.",
         is_list=True,
     ),
     Setting(
@@ -188,12 +196,12 @@ class Config:
     peek_timeout_ms: int = 1000
     idle_timeout_ms: int = 120000
     shutdown_grace_ms: int = 10000
+    access_log: bool = False
+    access_log_relayed: bool = False
     server_timing: bool = False
     intercept_hosts: tuple[str, ...] = ()
-    # name -> "module:attribute", including the built-in "log".
-    middleware_available: Mapping[str, str] = field(
-        default_factory=lambda: dict(BUILTIN_MIDDLEWARE)
-    )
+    # name -> "module:attribute"
+    middleware_available: Mapping[str, str] = field(default_factory=dict)
     middleware_chain: tuple[str, ...] = ()
     hook_timeout_ms: int = 5000
     max_buffer_bytes: int = 67108864
@@ -309,7 +317,7 @@ def _list(values: Mapping[str, Value], key: str) -> tuple[str, ...]:
 
 
 def _middleware(values: Mapping[str, Value]) -> tuple[dict[str, str], tuple[str, ...]]:
-    available = dict(BUILTIN_MIDDLEWARE)
+    available: dict[str, str] = {}
     for entry in _list(values, "middleware.available"):
         name, sep, ref = entry.partition("=")
         name, ref = name.strip(), ref.strip()
@@ -320,10 +328,15 @@ def _middleware(values: Mapping[str, Value]) -> tuple[dict[str, str], tuple[str,
         available[name] = ref
     chain = _list(values, "middleware.chain")
     for name in chain:
+        if name == "log" and name not in available:
+            raise ConfigError(
+                "middleware.chain: the built-in 'log' middleware was replaced by the "
+                "proxy.access_log setting; remove 'log' from the chain and set that instead"
+            )
         if name not in available:
             raise ConfigError(
                 f"middleware.chain: {name!r} is not in middleware.available "
-                f"(known: {', '.join(sorted(available))})"
+                f"(known: {', '.join(sorted(available)) or 'none'})"
             )
     if len(set(chain)) != len(chain):
         raise ConfigError("middleware.chain: a middleware is listed twice")
@@ -390,6 +403,8 @@ def load_config(path: Path | None = None, environ: Mapping[str, str] | None = No
         peek_timeout_ms=_int(values, "proxy.peek_timeout_ms"),
         idle_timeout_ms=_int(values, "proxy.idle_timeout_ms"),
         shutdown_grace_ms=_int(values, "proxy.shutdown_grace_ms"),
+        access_log=values["proxy.access_log"] is True,
+        access_log_relayed=values["proxy.access_log_relayed"] is True,
         server_timing=values["proxy.server_timing"] is True,
         intercept_hosts=hosts,
         middleware_available=available,

@@ -1,12 +1,9 @@
 import asyncio
-import logging
 
 import pytest
 
 from mitm_proxy.errors import StartupError
-from mitm_proxy.http.body import BufferedBodyStream
-from mitm_proxy.http.flow import ClientConn, Flow, FlowType, Request, Response, ServerConn
-from mitm_proxy.middleware.log import FlowLogger
+from mitm_proxy.http.flow import ClientConn, Flow, FlowType, Request
 from mitm_proxy.pipeline import Action, Middleware, Pipeline, is_mutation_capable, load_middleware
 
 
@@ -173,11 +170,9 @@ def test_load_middleware() -> None:
     available = {
         "cls": f"{mod}:Sample",
         "inst": f"{mod}:instance",
-        "log": "mitm_proxy.middleware.log:FlowLogger",
     }
-    loaded = load_middleware(available, ["cls", "inst", "log"])
-    assert [n for n, _ in loaded] == ["cls", "inst", "log"]
-    assert isinstance(loaded[2][1], FlowLogger)
+    loaded = load_middleware(available, ["cls", "inst"])
+    assert [n for n, _ in loaded] == ["cls", "inst"]
 
 
 @pytest.mark.parametrize(
@@ -192,33 +187,6 @@ def test_load_middleware() -> None:
 def test_load_middleware_errors(ref: str, message: str) -> None:
     with pytest.raises(StartupError, match=message):
         load_middleware({"x": ref}, ["x"])
-
-
-async def test_flow_logger_logs_one_line(caplog: pytest.LogCaptureFixture) -> None:
-    caplog.set_level(logging.INFO, logger="mitm_proxy.flows")
-    flow = make_flow()
-    flow.server_conn = ServerConn("example.org", 443, protocol="h2")
-    logger = FlowLogger()
-    assert await logger.on_request(flow) is Action.CONTINUE
-    flow.response = Response(200, body=BufferedBodyStream(b"hello"))
-    t = flow.timings
-    t.upstream_requested, t.upstream_acquired, t.connection_reused = 10.0, 10.0015, True
-    t.request_sent, t.response_headers = 10.002, 10.0312
-    t.middleware["a"] = 0.0004
-    assert await logger.on_response(flow) is Action.CONTINUE
-    line = caplog.records[-1].getMessage()
-    assert f"{flow.id} http/1.1>h2 GET https://example.org/ 200 req=0 resp=5 total=" in line
-    assert line.endswith("ms connect=1.5ms(reused) ttfb=29.2ms mw=0.4ms")
-
-
-async def test_flow_logger_prints_a_dash_for_a_stage_that_did_not_happen(
-    caplog: pytest.LogCaptureFixture,
-) -> None:
-    caplog.set_level(logging.INFO, logger="mitm_proxy.flows")
-    flow = make_flow()
-    flow.response = Response.make(200, b"cached")
-    await FlowLogger().on_response(flow)
-    assert caplog.records[-1].getMessage().endswith(" connect=- ttfb=- mw=0.0ms")
 
 
 async def test_hook_time_is_summed_per_middleware_and_kept_on_failure() -> None:

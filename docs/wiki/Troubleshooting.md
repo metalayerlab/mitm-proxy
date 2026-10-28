@@ -37,20 +37,24 @@ The middleware raised or ran past `middleware.hook_timeout_ms`. The flow carried
 
 ### Requests are slow: the proxy, the origin or a middleware?
 
-Turn on the `log` middleware (`middleware.chain: [log]`) and read the end of each flow line:
+Turn on the access log (`proxy.access_log: true`) and read the end of each flow line:
 
 ```text
-… 200 req=0 resp=1256 total=812.4ms connect=153.0ms ttfb=640.2ms mw=0.4ms
+… 200 req=0 resp=1256 total=812.4ms connect=153.0ms ttfb=640.2ms mw=0.4ms outcome=origin
 ```
 
 - **`ttfb`** is the origin: from the request being sent to its response headers. If it's most of `total`, the origin is slow, not the proxy.
 - **`connect`** is waiting for an upstream connection. Without `(reused)`, it's a new TCP and TLS connection, and high values point at DNS or the network to the origin. With `(reused)` it's normally about 0; a high value means the request queued for a free connection because the host had `upstream.max_connections_per_host` busy ones.
 - **`mw`** is time spent in middleware hooks. To find which one, read `flow.timings.middleware` (see [Writing Middleware](Writing-Middleware)).
-- **The rest** of `total` is the proxy's own work plus moving the bodies. For a flow middleware buffers, that includes receiving the whole response body from the origin. A large remainder on a big response is the download, not the proxy.
+- **The rest** of `total` is the proxy's own work plus moving the bodies: receiving the response from the origin and sending it to the client. A large remainder on a big response is the download, not the proxy.
 
-The line is written from the response hook, before the response goes to the client, so `total` runs to when the whole response has arrived. `-` means that stage didn't happen (for example, `connect=-` on a response a middleware sent itself).
+`-` means that stage didn't happen (for example, `connect=-` on a response a middleware sent itself, `outcome=local:<name>`).
 
-In a browser, set `proxy.server_timing: true` and open devtools (Network → a request → Timing): the same breakdown appears under Server Timing as `mitm-connect`, `mitm-origin`, `mitm-mw` and `mitm-proxy`, and `mitm-local` names the middleware that answered a request itself. These show up even when the `log` middleware doesn't run. See [In-Depth Configuration](In-Depth-Configuration).
+In a browser, set `proxy.server_timing: true` and open devtools (Network → a request → Timing): the same breakdown appears under Server Timing as `mitm-connect`, `mitm-origin`, `mitm-mw` and `mitm-proxy`, and `mitm-local` names the middleware that answered a request itself. These show up even for responses no middleware ran on. See [In-Depth Configuration](In-Depth-Configuration).
+
+### A flow ends with `outcome=aborted`
+
+The flow ended before the whole response was sent. Usually the client gave up: a browser cancels image and media requests it no longer needs (an HTTP/2 stream reset), or the user navigated away. Occasional `aborted` lines are normal. If every flow to one host ends that way, check the proxy's warnings for that flow ID: an origin that stops sending part-way also ends here.
 
 ### `… body is over body.max_buffer_bytes …; streaming it through without middleware`
 

@@ -22,7 +22,7 @@ No. The upgrade is forwarded and, once it succeeds, the connection is relayed as
 
 ## Does it record traffic?
 
-No. There's no flow history or replay. The built-in `log` middleware writes one line per flow, and your own middleware can store whatever it likes.
+No. There's no flow history or replay. The access log (`proxy.access_log`) writes one line per flow, and your own middleware can store whatever it likes.
 
 ## Why does my phone or app still fail after installing the CA?
 

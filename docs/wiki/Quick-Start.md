@@ -34,7 +34,7 @@ docker run -d --name mitm-proxy \
   -p 127.0.0.1:8080:8080 -p 127.0.0.1:3128:3128 \
   -e MITM_PROXY_LISTEN_HOST=0.0.0.0 -e MITM_PROXY_PROXY_HOST=0.0.0.0 \
   -e MITM_PROXY_INTERCEPT_HOSTS=example.org \
-  -e MITM_PROXY_MIDDLEWARE_CHAIN=log \
+  -e MITM_PROXY_PROXY_ACCESS_LOG=true \
   ghcr.io/metalayerlab/mitm-proxy:latest
 ```
 
@@ -47,7 +47,7 @@ docker logs mitm-proxy | grep mitm_proxy.flows          # 3. see the flow
 ```
 
 ```text
-INFO mitm_proxy.flows: 3f2c… http/1.1>h2 GET https://example.org/ 200 req=0 resp=1256 total=41.0ms connect=0.0ms(reused) ttfb=29.1ms mw=0.4ms
+INFO mitm_proxy.flows: 3f2c… http/1.1>h2 GET https://example.org/ 200 req=0 resp=1256 total=41.3ms connect=0.0ms(reused) ttfb=29.1ms mw=0.0ms outcome=origin
 ```
 
 Without `--cacert`, curl refuses the proxy's certificate: that's the check working. A browser needs the CA installed in its trust store; download it from `http://127.0.0.1:8080/ca.pem` (or `/ca.der` on phones). Hosts you didn't list still work, untouched: try `https://example.net/` through the same proxy.

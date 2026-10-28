@@ -20,7 +20,15 @@ from mitm_proxy.errors import (
 )
 from mitm_proxy.http import framing
 from mitm_proxy.http.body import BufferedBodyStream, PassthroughBody, empty
-from mitm_proxy.http.flow import ClientConn, Flow, FlowType, Request, Response, ServerConn
+from mitm_proxy.http.flow import (
+    ClientConn,
+    Flow,
+    FlowType,
+    Outcome,
+    Request,
+    Response,
+    ServerConn,
+)
 from mitm_proxy.http.h1 import H1Upstream
 from mitm_proxy.http.headers import Headers
 from mitm_proxy.http.messages import IncomingRequest, Responder, UpstreamResponse
@@ -32,6 +40,8 @@ from mitm_proxy.streams import ByteStream
 from mitm_proxy.upstream.pool import ConnectionPool, Target
 
 log = logging.getLogger(__name__)
+flows_log = logging.getLogger("mitm_proxy.flows")  # proxy.access_log (0005)
+relayed_log = logging.getLogger("mitm_proxy.relayed")  # proxy.access_log_relayed (0005)
 
 IDEMPOTENT = frozenset({"GET", "HEAD", "OPTIONS", "PUT", "DELETE", "TRACE"})
 
@@ -51,6 +61,8 @@ class ExchangeContext:
     target: Target | None = None
     scope: Allowlist | None = None  # plain-HTTP proxying: which hosts get middleware
     server_timing: bool = False  # add a Server-Timing field to intercepted responses (0004)
+    access_log: bool = False  # a line per intercepted flow (0005)
+    access_log_relayed: bool = False  # a line per relayed plain-HTTP request (0005)
 
     def route(self, request: Request) -> tuple[Target, Pipeline | None, str]:
         if self.target is not None:
@@ -117,6 +129,68 @@ async def _chain(first: list[bytes], rest: AsyncIterator[bytes]) -> AsyncIterato
         yield chunk
 
 
+class _Recorder:
+    """The client's Responder, recording what was sent: status, body bytes, and the end."""
+
+    def __init__(self, inner: Responder) -> None:
+        self.inner = inner
+        self.protocol = inner.protocol
+        self.status: int | None = None
+        self.sent = 0
+        self.finished = False
+
+    @property
+    def started(self) -> bool:
+        return self.inner.started
+
+    @started.setter
+    def started(self, value: bool) -> None:
+        self.inner.started = value
+
+    async def start(self, response: Response, headers: Headers, *, end: bool) -> None:
+        await self.inner.start(response, headers, end=end)
+        self.status = response.status
+        self.finished = end
+
+    async def data(self, chunk: bytes) -> None:
+        await self.inner.data(chunk)
+        self.sent += len(chunk)
+
+    async def end(self, trailers: Headers | None) -> None:
+        await self.inner.end(trailers)
+        self.finished = True
+
+
+class _Tally:
+    """What the access log needs: the path the exchange took, and what crossed the client leg."""
+
+    def __init__(self, responder: Responder) -> None:
+        self.responder = _Recorder(responder)
+        self.received = 0  # request body bytes read from the client
+        self.kind = "origin"
+        self.by: str | None = None
+        self.relayed: tuple[int, int] | None = None  # a WebSocket's bytes each way
+
+    def mark(self, kind: str, by: str | None = None) -> None:
+        self.kind, self.by = kind, by
+
+    async def count(self, body: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+        async for chunk in body:
+            self.received += len(chunk)
+            yield chunk
+
+    def outcome(self) -> Outcome:
+        r = self.responder
+        if self.relayed is not None:
+            return Outcome("websocket", None, 101)
+        if not r.finished:
+            return Outcome("aborted", None, r.status)
+        return Outcome(self.kind, self.by, r.status)
+
+    def sizes(self) -> tuple[int, int]:
+        return self.relayed if self.relayed is not None else (self.received, self.responder.sent)
+
+
 def _ms(seconds: float) -> str:
     return f"{seconds * 1000:.1f}"
 
@@ -170,32 +244,88 @@ async def send_simple(
 
 async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Responder) -> None:
     """Serve one request. Errors become proxy responses; nothing propagates but I/O errors."""
-    if incoming.websocket is not None:
-        await _websocket(ctx, incoming, incoming.websocket, responder)
-        return
     request = incoming.request
     target, pipeline, kind = ctx.route(request)
+    switch = incoming.websocket
     flow = Flow(
-        type=FlowType.HTTP, protocol=ctx.protocol, client_conn=ctx.client_conn, request=request
+        type=FlowType.HTTP if switch is None else FlowType.WEBSOCKET,
+        protocol=ctx.protocol,
+        client_conn=ctx.client_conn,
+        request=request,
     )
-    ctx.metrics.flows.inc(kind)
-    timed = ctx.server_timing and ctx.intercepts(request)
+    ctx.metrics.flows.inc(kind if switch is None else FlowType.WEBSOCKET.value)
+    tally = _Tally(responder)
+    incoming.body = tally.count(incoming.body)
     try:
-        await _exchange(ctx, flow, incoming, responder, target, pipeline, timed)
+        if switch is not None:
+            await _websocket(ctx, flow, incoming, switch, tally, target)
+        else:
+            timed = ctx.server_timing and ctx.intercepts(request)
+            await _exchange(ctx, flow, incoming, tally, target, pipeline, timed)
     finally:
         flow.timings.complete = time.monotonic()
+        _access_log(ctx, flow, tally)
+
+
+def _access_log(ctx: ExchangeContext, flow: Flow, tally: _Tally) -> None:
+    """The flow's access-log line (0005). Synchronous: written even when the flow is cancelled."""
+    intercepted = ctx.intercepts(flow.request)
+    if not (ctx.access_log if intercepted else ctx.access_log_relayed):
+        return
+    request, t, outcome = flow.request, flow.timings, tally.outcome()
+    received, sent = tally.sizes()
+    status = outcome.status if outcome.status is not None else "-"
+    url = f"{request.scheme}://{request.authority}{request.path}"
+    if not intercepted:
+        address = f"{flow.client_conn.address[0]}:{flow.client_conn.address[1]}"
+        relayed_log.info(
+            "http %s %s %s %s %s req=%d resp=%d total=%s",
+            flow.id,
+            address,
+            request.method,
+            url,
+            status,
+            received,
+            sent,
+            _log_ms(t.total),
+        )
+        return
+    connect = _log_ms(t.connect)
+    if t.connect is not None and t.connection_reused:
+        connect += "(reused)"
+    flows_log.info(
+        "%s %s>%s %s %s %s req=%d resp=%d total=%s connect=%s ttfb=%s mw=%s outcome=%s",
+        flow.id,
+        flow.protocol,
+        flow.server_conn.protocol if flow.server_conn else "-",
+        request.method,
+        url,
+        status,
+        received,
+        sent,
+        _log_ms(t.total),
+        connect,
+        _log_ms(t.ttfb),
+        _log_ms(t.middleware_total),
+        outcome,
+    )
+
+
+def _log_ms(seconds: float | None) -> str:
+    return "-" if seconds is None else f"{seconds * 1000:.1f}ms"
 
 
 async def _exchange(
     ctx: ExchangeContext,
     flow: Flow,
     incoming: IncomingRequest,
-    responder: Responder,
+    tally: _Tally,
     target: Target,
     pipeline: Pipeline | None,
     timed: bool,
 ) -> None:
     request = flow.request
+    responder = tally.responder
 
     def timing(local: str | None = None) -> str | None:
         return server_timing(flow, local) if timed else None
@@ -226,6 +356,7 @@ async def _exchange(
         outcome = await active.run_request()
         if outcome.action is Action.DENY:
             log.info("flow %s denied by middleware %r", flow.id, outcome.by)
+            tally.mark("denied", outcome.by)
             await send_simple(
                 responder,
                 403,
@@ -237,6 +368,7 @@ async def _exchange(
         if outcome.action is Action.STOP:
             if flow.response is None:
                 log.error("middleware %r stopped flow %s without a response", outcome.by, flow.id)
+                tally.mark("error", outcome.by)
                 await send_simple(
                     responder,
                     502,
@@ -245,7 +377,8 @@ async def _exchange(
                     timing=timing(outcome.by),
                 )
                 return
-            await _respond(ctx, flow, None, responder, None, timed=timed, local=outcome.by)
+            tally.mark("local", outcome.by)
+            await _respond(ctx, flow, None, tally, None, timed=timed, local=outcome.by)
             return
         if incoming.has_body and isinstance(request.body, BufferedBodyStream):
             data = await active.run_request_chunk(await request.body.read_all(), True)
@@ -273,9 +406,10 @@ async def _exchange(
     except UpstreamError as e:
         status = 504 if isinstance(e, UpstreamTimeout) else 502
         log.warning("flow %s: %s", flow.id, e)
+        tally.mark("error")
         await send_simple(responder, status, str(e), head_only=head_only, timing=timing())
         return
-    await _respond(ctx, flow, upstream, responder, active, timed=timed)
+    await _respond(ctx, flow, upstream, tally, active, timed=timed)
 
 
 async def _send_upstream(
@@ -337,7 +471,7 @@ async def _respond(
     ctx: ExchangeContext,
     flow: Flow,
     upstream: UpstreamResponse | None,
-    responder: Responder,
+    tally: _Tally,
     active: FlowPipeline | None,
     *,
     timed: bool = False,
@@ -348,6 +482,7 @@ async def _respond(
     timed: add the proxy's Server-Timing field; local: the middleware that answered.
     """
     request = flow.request
+    responder = tally.responder
     source = _Body(upstream.body if upstream is not None else empty())
     try:
         if upstream is not None:
@@ -370,6 +505,7 @@ async def _respond(
                 outcome = await active.run_response()
                 if outcome.action is Action.DENY:
                     log.info("flow %s response denied by middleware %r", flow.id, outcome.by)
+                    tally.mark("denied", outcome.by)
                     await send_simple(
                         responder,
                         502,
@@ -449,25 +585,24 @@ def _oversize(
 
 async def _websocket(
     ctx: ExchangeContext,
+    flow: Flow,
     incoming: IncomingRequest,
     switch: Callable[[Headers], Awaitable[ByteStream]],
-    responder: Responder,
+    tally: _Tally,
+    target: Target,
 ) -> None:
     """Forward the upgrade on a dedicated HTTP/1.1 connection; on 101, relay raw bytes.
 
     No middleware runs for WebSocket flows, including the upgrade request itself.
     """
     request = incoming.request
-    target, _, _ = ctx.route(request)
-    flow = Flow(
-        type=FlowType.WEBSOCKET, protocol=ctx.protocol, client_conn=ctx.client_conn, request=request
-    )
-    ctx.metrics.flows.inc(FlowType.WEBSOCKET.value)
+    responder = tally.responder
     head_only = request.method == "HEAD"
     try:
         stream, address = await ctx.pool.open_dedicated(target)
     except UpstreamError as e:
         log.warning("flow %s: %s", flow.id, e)
+        tally.mark("error")
         await send_simple(responder, 504 if isinstance(e, UpstreamTimeout) else 502, str(e))
         return
     flow.server_conn = ServerConn(
@@ -483,11 +618,12 @@ async def _websocket(
         )
     except UpstreamError as e:
         log.warning("flow %s: %s", flow.id, e)
+        tally.mark("error")
         await send_simple(responder, 502, str(e), head_only=head_only)
         return
     if upstream.switched is None:
         try:
-            await _respond(ctx, flow, upstream, responder, None)
+            await _respond(ctx, flow, upstream, tally, None)
         finally:
             await upstream_conn.close()
         return
@@ -495,4 +631,5 @@ async def _websocket(
     reply.set("connection", "Upgrade")
     reply.set("upgrade", incoming.raw_headers.get("upgrade") or "websocket")
     client = await switch(reply)
-    await relay(client, upstream.switched, idle_timeout=ctx.idle_timeout)
+    tally.relayed = (0, 0)
+    tally.relayed = await relay(client, upstream.switched, idle_timeout=ctx.idle_timeout)

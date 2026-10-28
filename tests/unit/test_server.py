@@ -183,6 +183,53 @@ async def test_relay_connect_failure_rejects_the_connect(tmp_path: Path) -> None
     await proxy.stop()
 
 
+@pytest.mark.parametrize(
+    ("host", "reason"), [("example.net", "out_of_scope"), ("example.org", "not_tls")]
+)
+async def test_relayed_tunnels_are_logged_when_the_user_asks(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture, host: str, reason: str
+) -> None:
+    caplog.set_level(logging.INFO, logger="mitm_proxy.relayed")
+    origin = Origin()
+    config = make_config(tmp_path, MITM_PROXY_PROXY_ACCESS_LOG_RELAYED="true")
+    proxy = ProxyServer(config, connector=origin.connector)
+    data, _ = await relay_http_through(proxy, host)
+    line = next(r.getMessage() for r in caplog.records if r.name == "mitm_proxy.relayed")
+    assert line.startswith("tunnel ")
+    assert f" 192.0.2.1:5000 {host}:80 {reason} up=" in line
+    up = int(line.split(" up=")[1].split()[0])
+    down = int(line.split(" down=")[1].split()[0])
+    request = b"GET /raw HTTP/1.1\r\nHost: example.net\r\n\r\n"
+    assert (up, down) == (len(request), len(data))  # peeked bytes are counted too
+    await proxy.stop()
+
+
+async def test_relayed_tunnels_are_not_logged_by_default(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="mitm_proxy.relayed")
+    proxy = ProxyServer(make_config(tmp_path), connector=Origin().connector)
+    await relay_http_through(proxy, "example.net")
+    assert not [r for r in caplog.records if r.name == "mitm_proxy.relayed"]
+    await proxy.stop()
+
+
+async def test_a_tunnel_that_cannot_connect_is_logged_with_its_error(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    caplog.set_level(logging.INFO, logger="mitm_proxy.relayed")
+    origin = Origin()
+    origin.fail_connect = UpstreamConnectError("refused")
+    config = make_config(tmp_path, MITM_PROXY_PROXY_ACCESS_LOG_RELAYED="true")
+    proxy = ProxyServer(config, connector=origin.connector)
+    _client, proxy_raw = memory_pair()
+    conn, _ = tunnel(proxy_raw, "example.net")
+    await proxy.handle_tunnel(conn)
+    line = next(r.getMessage() for r in caplog.records if r.name == "mitm_proxy.relayed")
+    assert " example.net:443 error:502 up=0 down=0 " in line
+    await proxy.stop()
+
+
 async def test_explicit_source_end_to_end(tmp_path: Path) -> None:
     origin = Origin()
     proxy = ProxyServer(make_config(tmp_path), connector=origin.connector)

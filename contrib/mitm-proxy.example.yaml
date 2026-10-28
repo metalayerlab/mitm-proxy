@@ -26,6 +26,10 @@ proxy:
   peek_timeout_ms: 1000
   idle_timeout_ms: 120000
   shutdown_grace_ms: 10000
+  # One line per intercepted flow (logger mitm_proxy.flows)
+  access_log: false
+  # One line per relayed tunnel or plain-HTTP request to an unlisted host (mitm_proxy.relayed)
+  access_log_relayed: false
   # Server-Timing header on intercepted responses (browser devtools); tells pages they were intercepted
   server_timing: false
 
@@ -35,11 +39,10 @@ intercept:
   # hosts: [example.org, "*.example.org"]
 
 middleware:
-  # Installed middleware that may run, as name=module:attribute ("log" is built in)
+  # Installed middleware that may run, as name=module:attribute
   available: []
   # What runs, by name, in order
   chain: []
-  # chain: [log]
   hook_timeout_ms: 5000
 
 body:

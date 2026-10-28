@@ -101,7 +101,8 @@ def test_new_defaults(tmp_path: Path) -> None:
     assert (cfg.proxy_host, cfg.proxy_port) == ("127.0.0.1", 3128)
     assert cfg.intercept_hosts == ()
     assert cfg.middleware_chain == ()
-    assert cfg.middleware_available == {"log": "mitm_proxy.middleware.log:FlowLogger"}
+    assert cfg.middleware_available == {}
+    assert (cfg.access_log, cfg.access_log_relayed) == (False, False)
     assert cfg.values["intercept.hosts"] == ()
 
 
@@ -118,21 +119,20 @@ def test_invalid_allowlist_entry(tmp_path: Path) -> None:
 
 
 def test_middleware_registry_and_chain(write_config: Callable[..., Path]) -> None:
-    path = write_config(
-        "middleware:\n  available: ['strip=pkg.mod:Strip']\n  chain: [strip, log]\n"
-    )
+    path = write_config("middleware:\n  available: ['strip=pkg.mod:Strip']\n  chain: [strip]\n")
     cfg = load_config(path, environ={})
     assert cfg.middleware_available["strip"] == "pkg.mod:Strip"
-    assert cfg.middleware_chain == ("strip", "log")
+    assert cfg.middleware_chain == ("strip",)
 
 
 @pytest.mark.parametrize(
     ("yaml_text", "message"),
     [
         ("middleware:\n  chain: [nope]\n", "not in middleware.available"),
-        ("middleware:\n  chain: [log, log]\n", "listed twice"),
+        ("middleware:\n  available: ['a=m:A']\n  chain: [a, a]\n", "listed twice"),
+        ("middleware:\n  chain: [log]\n", "replaced by the proxy.access_log setting"),
         ("middleware:\n  available: ['x=no-colon']\n", "name=module:attribute"),
-        ("middleware:\n  available: ['log=a.b:C']\n", "defined twice"),
+        ("middleware:\n  available: ['x=a.b:C', 'x=d.e:F']\n", "defined twice"),
     ],
 )
 def test_middleware_errors(write_config: Callable[..., Path], yaml_text: str, message: str) -> None:
@@ -193,3 +193,9 @@ def test_server_timing_is_off_by_default_and_set_from_file_or_env(
     assert load_config(path, environ={}).server_timing is True
     env = {"MITM_PROXY_PROXY_SERVER_TIMING": "false"}
     assert load_config(path, environ=env).server_timing is False
+
+
+def test_access_log_settings(write_config: Callable[..., Path]) -> None:
+    path = write_config("proxy:\n  access_log: true\n")
+    cfg = load_config(path, environ={"MITM_PROXY_PROXY_ACCESS_LOG_RELAYED": "true"})
+    assert (cfg.access_log, cfg.access_log_relayed) == (True, True)

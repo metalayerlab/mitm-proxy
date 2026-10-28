@@ -32,7 +32,7 @@ What's running, without secrets or hostnames (the configuration shows as a hash)
   "state": "ready",
   "started_at": "2026-10-28T14:28:33.156412+00:00",
   "config": {"hash": "sha256:a7230c…", "status": "APPLIED", "applied_at": "2026-10-28T14:28:33.156407+00:00"},
-  "middleware": ["log"],
+  "middleware": ["block-ads"],
   "health": {
     "proxy_listener": {"healthy": true, "status": "listening"},
     "ca": {"healthy": true, "status": "loaded"}

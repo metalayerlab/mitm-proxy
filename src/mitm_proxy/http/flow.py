@@ -123,6 +123,22 @@ class Timings:
         return _between(self.started, self.complete)
 
 
+@dataclass(frozen=True)
+class Outcome:
+    """How a flow ended. Written in the access log as kind, kind:by or error:status."""
+
+    kind: str  # "origin" | "local" | "denied" | "error" | "aborted" | "websocket"
+    by: str | None = None  # the middleware, for "local", "denied" (and a STOP's "error")
+    status: int | None = None  # the status sent to the client, if one was
+
+    def __str__(self) -> str:
+        if self.kind == "error":
+            return f"error:{self.status if self.status is not None else '-'}"
+        if self.by is not None and self.kind in ("local", "denied"):
+            return f"{self.kind}:{self.by}"
+        return self.kind
+
+
 def _between(start: float | None, end: float | None) -> float | None:
     return None if start is None or end is None else end - start
 

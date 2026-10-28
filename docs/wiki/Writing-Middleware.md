@@ -32,7 +32,7 @@ Install the package where mitm-proxy runs, then register and enable it:
 ```yaml
 middleware:
   available: [block-ads=labtools.middleware:BlockAds]
-  chain: [block-ads, log]
+  chain: [block-ads]
 ```
 
 The name (`block-ads`) is what appears in logs and metrics. The order of `chain` is the order of execution: there are no priorities.
@@ -112,5 +112,3 @@ class SlowOrigins(Middleware):
 - **Narrow with `applies_to`.** Every flow a middleware applies to is buffered, and a middleware with a chunk hook makes its flows' bodies go out chunked. Some origins refuse chunked uploads (`411`).
 - **Bodies over `body.max_buffer_bytes`** skip middleware entirely and stream through.
 - **Don't start background tasks per chunk.** Await your work in the hook; the pipeline relies on it for backpressure.
-
-The built-in `log` middleware ([`mitm_proxy/middleware/log.py`](https://github.com/metalayerlab/mitm-proxy/blob/main/src/mitm_proxy/middleware/log.py)) is a complete, short example.

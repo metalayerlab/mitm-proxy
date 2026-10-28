@@ -29,9 +29,11 @@ Generated from the code: don't edit the table, run `uv run scripts/gen-wiki.py`.
 | `proxy.peek_timeout_ms` | `MITM_PROXY_PROXY_PEEK_TIMEOUT_MS` | `1000` | How long to wait for a TLS ClientHello after CONNECT before relaying the tunnel raw. |
 | `proxy.idle_timeout_ms` | `MITM_PROXY_PROXY_IDLE_TIMEOUT_MS` | `120000` | Close a client connection or tunnel after this long with no traffic. |
 | `proxy.shutdown_grace_ms` | `MITM_PROXY_PROXY_SHUTDOWN_GRACE_MS` | `10000` | On SIGTERM, how long in-flight connections get to finish. |
+| `proxy.access_log` | `MITM_PROXY_PROXY_ACCESS_LOG` | `False` | Log one line per intercepted flow (`mitm_proxy.flows`): sizes, timings and how it ended. |
+| `proxy.access_log_relayed` | `MITM_PROXY_PROXY_ACCESS_LOG_RELAYED` | `False` | Log one line per flow relayed without interception (`mitm_proxy.relayed`): tunnels to unlisted hosts and plain HTTP to them. Records every destination. |
 | `proxy.server_timing` | `MITM_PROXY_PROXY_SERVER_TIMING` | `False` | Add a `Server-Timing` header (connect, origin, middleware, proxy times) to every intercepted response, for browser devtools. Tells pages they were intercepted. |
 | `intercept.hosts` | `MITM_PROXY_INTERCEPT_HOSTS` | *(none)* | The allowlist: hosts to intercept (`example.org`, `*.example.org`, IP literals). Everything else is tunnelled untouched. Empty: intercept nothing. |
-| `middleware.available` | `MITM_PROXY_MIDDLEWARE_AVAILABLE` | *(none)* | Installed middleware that may run, as `name=module:attribute`. The built-in `log` is always available. |
+| `middleware.available` | `MITM_PROXY_MIDDLEWARE_AVAILABLE` | *(none)* | Installed middleware that may run, as `name=module:attribute`. |
 | `middleware.chain` | `MITM_PROXY_MIDDLEWARE_CHAIN` | *(none)* | The middleware to run, by name, in order. |
 | `middleware.hook_timeout_ms` | `MITM_PROXY_MIDDLEWARE_HOOK_TIMEOUT_MS` | `5000` | A middleware hook that runs longer than this has failed, and is skipped for the flow. |
 | `body.max_buffer_bytes` | `MITM_PROXY_BODY_MAX_BUFFER_BYTES` | `67108864` | The largest body buffered for middleware. A larger body skips middleware and is streamed through. |
@@ -61,7 +63,7 @@ The TLS name the client asks for (SNI) must be on the list too, or the tunnel is
 
 ### Middleware
 
-`middleware.available` registers installed middleware by name, as `name=module:attribute` (a `Middleware` subclass, created with no arguments, or an instance). `middleware.chain` lists the names to run, in order. The built-in `log` is always available. A chain name that isn't registered is a configuration error. See [Writing Middleware](Writing-Middleware).
+`middleware.available` registers installed middleware by name, as `name=module:attribute` (a `Middleware` subclass, created with no arguments, or an instance). `middleware.chain` lists the names to run, in order. A chain name that isn't registered is a configuration error. There's no built-in middleware: the old built-in `log` became the `proxy.access_log` setting, and a chain that still names `log` fails at startup with a message saying so. See [Writing Middleware](Writing-Middleware).
 
 ### Bodies and framing
 
@@ -83,6 +85,46 @@ All times are in milliseconds.
 ### Exposure
 
 Both listeners default to `127.0.0.1`. To let other machines use the proxy, set `proxy.host` (e.g. `0.0.0.0`) **and** `proxy.auth`: without credentials, anyone who can reach the port can use your proxy to reach anything it can (the proxy warns at startup). Containers bind `0.0.0.0` inside, and the published ports decide what's reachable.
+
+### The access log
+
+`proxy.access_log: true` writes one INFO line per intercepted flow on the `mitm_proxy.flows` logger, once the flow has ended:
+
+```text
+9eba5076… h2>h2 GET https://example.org/a.png 200 req=0 resp=21292 total=79.6ms connect=0.0ms(reused) ttfb=79.3ms mw=0.1ms outcome=origin
+```
+
+After the flow ID: the client's protocol `>` the origin's, the method, URL and status, then:
+
+| Field | Meaning |
+|---|---|
+| `req`, `resp` | Body bytes read from the client and written to the client (after any rewrite) |
+| `total` | From the request headers arriving to the last byte sent |
+| `connect`, `ttfb`, `mw` | Waiting for an upstream connection (`(reused)` if pooled), the origin's share, time in middleware hooks. See [Troubleshooting](Troubleshooting#requests-are-slow-the-proxy-the-origin-or-a-middleware) |
+| `outcome` | How the flow ended (below) |
+
+| `outcome` | Meaning |
+|---|---|
+| `origin` | The origin's response was sent |
+| `local:<name>` | Middleware `<name>` answered the request itself |
+| `denied:<name>` | Middleware `<name>` denied it (`403` on the request, `502` on the response) |
+| `error:<status>` | The proxy answered with its own error (`502`, `504`) |
+| `aborted` | The flow ended before the response was complete: the client reset or disconnected, or an I/O error. The status is the one already sent, or `-` |
+| `websocket` | A WebSocket, logged when it closes; `req`/`resp` are the bytes each way |
+
+A stage that didn't happen prints `-`. Logging adds no buffering: flows no middleware applies to are still streamed.
+
+`proxy.access_log_relayed: true` logs what the proxy relays **without** intercepting, on the `mitm_proxy.relayed` logger. Turn it on or off independently of `proxy.access_log`:
+
+```text
+tunnel 4f0c… 192.0.2.10:51234 example.net:443 out_of_scope up=1830 down=48211 total=5012.3ms
+http 7a1d… 192.0.2.10:51240 GET http://example.net/ 200 req=0 resp=1256 total=88.1ms
+```
+
+- `tunnel` lines are written when a tunnel closes. The reason is `out_of_scope` (host not listed), `not_tls`, `sni_out_of_scope`, or `error:<status>` when the proxy couldn't connect. `up` and `down` are the bytes from and to the client. Nothing inside a tunnel is visible.
+- `http` lines are plain-HTTP requests to unlisted hosts.
+
+It records every destination and client address, so it's off by default. See [Security](Security).
 
 ### Server-Timing
 
@@ -132,10 +174,10 @@ A complete config file with every default is in [contrib/mitm-proxy.example.yaml
 **On your laptop, looking at one API.** Defaults bind to loopback; log every flow to the API and its subdomains:
 
 ```yaml
+proxy:
+  access_log: true
 intercept:
   hosts: [api.example.org, "*.api.example.org"]
-middleware:
-  chain: [log]
 ```
 
 **A shared proxy on a lab network,** with your own middleware and an internal CA the lab services use:
@@ -147,7 +189,7 @@ intercept:
   hosts: ["*.lab.example.org"]
 middleware:
   available: [strip=labtools.middleware:StripTracking]
-  chain: [strip, log]
+  chain: [strip]
 upstream:
   extra_ca_file: /etc/mitm-proxy/lab-ca.pem
 ```
