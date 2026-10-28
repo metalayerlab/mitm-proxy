@@ -9,9 +9,12 @@ Generated from the code: don't edit the table, run `uv run scripts/gen-wiki.py`.
 <!-- generated:start http-api -->
 | Method | Path | Summary |
 |---|---|---|
+| `GET` | `/ca.der` | The root CA certificate (DER), to install on clients |
+| `GET` | `/ca.pem` | The root CA certificate (PEM), to install on clients |
 | `GET` | `/healthz` | Liveness: the process is up |
-| `GET` | `/readyz` | Readiness: able to serve requests |
-| `GET` | `/version` | The running version |
+| `GET` | `/metrics` | Prometheus metrics |
+| `GET` | `/readyz` | Readiness: the proxy listener is up and the CA is loaded |
+| `GET` | `/v1/status` | Version, configuration, health and CA expiry |
 <!-- generated:end http-api -->
 
 `/healthz` (liveness) answers as long as the process runs. `/readyz` (readiness) answers 503 while the service can't serve, for example while a dependency is down. Orchestrators should restart on the first and route traffic on the second.

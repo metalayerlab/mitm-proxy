@@ -300,6 +300,8 @@ class ProxyServer:
     # Shutdown and status
 
     async def stop(self, grace: float | None = None) -> None:
+        if self.state == "stopped":
+            return
         self.state = "stopping"
         if grace is None:
             grace = self.snapshot.config.shutdown_grace_ms / 1000
@@ -315,6 +317,7 @@ class ProxyServer:
                 await self._server.wait_closed()
         await self.pool.close()
         self.ca.close()
+        self.state = "stopped"
 
     def status(self) -> dict[str, Any]:
         snap = self.snapshot
