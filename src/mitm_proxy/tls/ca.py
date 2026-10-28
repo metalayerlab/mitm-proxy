@@ -40,6 +40,9 @@ log = logging.getLogger(__name__)
 ROOT_VALIDITY = datetime.timedelta(days=3650)
 LEAF_VALIDITY = datetime.timedelta(days=30)
 BACKDATE = datetime.timedelta(days=1)
+# A cached leaf is replaced this long before it expires, so a long-running proxy
+# never presents an expired one.
+RENEW_BEFORE = datetime.timedelta(days=1)
 CERT_FILE = "ca.pem"
 KEY_FILE = "ca-key.pem"
 
@@ -178,7 +181,8 @@ class CertificateAuthority:
         self._key = key
         self._cache_size = cache_size
         self._alpn = list(alpn)
-        self._contexts: OrderedDict[str, ssl.SSLContext] = OrderedDict()
+        # host -> (context, when to mint a new leaf for it)
+        self._contexts: OrderedDict[str, tuple[ssl.SSLContext, datetime.datetime]] = OrderedDict()
         self._lock = threading.Lock()
         self._leaf_key = ec.generate_private_key(ec.SECP256R1())
         self._ski = x509.SubjectKeyIdentifier.from_public_key(key.public_key())
@@ -251,11 +255,15 @@ class CertificateAuthority:
     def server_context(self, host: str) -> ssl.SSLContext:
         """A client-facing server SSLContext presenting a leaf for host, from the cache."""
         with self._lock:
-            ctx = self._contexts.get(host)
-            if ctx is not None:
+            cached = self._contexts.get(host)
+            if cached is not None and _now() < cached[1]:
                 self._contexts.move_to_end(host)
-                return ctx
+                return cached[0]
         leaf = self.mint_leaf(host)
+        not_after = leaf.not_valid_after_utc
+        # Normally a day early; half the remaining life if the root caps the leaf sooner,
+        # so a nearly expired root doesn't mean a new leaf on every handshake.
+        renew_at = not_after - min(RENEW_BEFORE, (not_after - _now()) / 2)
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.minimum_version = ssl.TLSVersion.TLSv1_2
         ctx.set_alpn_protocols(self._alpn)
@@ -268,7 +276,8 @@ class CertificateAuthority:
         finally:
             chain_path.unlink(missing_ok=True)
         with self._lock:
-            self._contexts[host] = ctx
+            self._contexts[host] = (ctx, renew_at)
+            self._contexts.move_to_end(host)
             while len(self._contexts) > self._cache_size:
                 self._contexts.popitem(last=False)
         return ctx

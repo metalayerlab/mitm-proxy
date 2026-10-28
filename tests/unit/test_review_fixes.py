@@ -2,6 +2,8 @@
 
 import asyncio
 
+import pytest
+
 from mitm_proxy.errors import UpstreamConnectError
 from mitm_proxy.exchange import handle
 from mitm_proxy.http.flow import Request, Response
@@ -67,3 +69,24 @@ async def test_a_discarded_response_gives_its_window_back_to_the_shared_upstream
     assert len(reply.body) == 1536 * 1024
     assert b.origin.connections == 1
     await b.close()
+
+
+def test_a_cached_leaf_is_replaced_before_it_expires(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Finding 3: a proxy up for over 30 days must not present an expired leaf."""
+    import datetime
+
+    from mitm_proxy.tls import ca as ca_module
+    from tests.helpers import make_ca
+
+    start = datetime.datetime.now(datetime.UTC)
+    clock = [start]
+    monkeypatch.setattr(ca_module, "_now", lambda: clock[0])
+    authority = make_ca()
+    first = authority.server_context("example.org")
+    clock[0] = start + datetime.timedelta(days=20)
+    assert authority.server_context("example.org") is first  # still well inside 30 days
+    clock[0] = start + datetime.timedelta(days=29, hours=12)
+    renewed = authority.server_context("example.org")
+    assert renewed is not first  # a day before expiry: a fresh leaf
+    clock[0] = start + datetime.timedelta(days=40)
+    assert authority.server_context("example.org") is renewed  # the new one lasts 30 days
