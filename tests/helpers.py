@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import contextlib
 import ssl
 
@@ -57,3 +58,57 @@ def handshake_in_memory(
         if all(done.values()):
             return client, server
     raise AssertionError("handshake did not finish")
+
+
+class MemoryStream:
+    """One end of an in-memory ByteStream pair (no backpressure, one reader)."""
+
+    def __init__(self) -> None:
+        self._buffer = bytearray()
+        self._eof = False
+        self._closed = False
+        self._ready = asyncio.Event()
+        self.peer: MemoryStream | None = None
+        self.written = 0
+
+    def _feed(self, data: bytes) -> None:
+        self._buffer += data
+        self._ready.set()
+
+    def _end(self) -> None:
+        self._eof = True
+        self._ready.set()
+
+    async def read(self, n: int = 65536) -> bytes:
+        while not self._buffer and not self._eof:
+            self._ready.clear()
+            await self._ready.wait()
+        data = bytes(self._buffer[:n])
+        del self._buffer[:n]
+        return data
+
+    async def write(self, data: bytes) -> None:
+        if self._closed or self.peer is None or self.peer._closed:
+            raise ConnectionResetError("memory stream closed")
+        self.written += len(data)
+        self.peer._feed(bytes(data))
+        await asyncio.sleep(0)
+
+    def write_eof(self) -> None:
+        if self.peer is not None:
+            self.peer._end()
+
+    async def close(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self.write_eof()
+            self._end()
+
+    def is_closing(self) -> bool:
+        return self._closed
+
+
+def memory_pair() -> tuple[MemoryStream, MemoryStream]:
+    a, b = MemoryStream(), MemoryStream()
+    a.peer, b.peer = b, a
+    return a, b
