@@ -5,8 +5,11 @@ the team (and its AI assistants) should know at a glance.
 
 ## Open
 
-- [ ] Write docs/design/0001-initial-design.md (docs/ai/prompts.md, prompt 1)
-- [ ] Replace every `<!-- guidance -->` comment in docs/wiki/ (a Release PR is blocked until then)
+- [x] Write docs/design/0001-initial-design.md (docs/ai/prompts.md, prompt 1)
+- [x] Replace every `<!-- guidance -->` comment in docs/wiki/ (a Release PR is blocked until then)
+- [ ] project-template: `scripts/gen-wiki.py` skips Typer sub-groups (`ca init`, `ca show`, `scope check` are documented by hand in CLI-Reference)
+- [ ] project-template: the Dockerfile skeleton `EXPOSE`s only 8080; the proxy also listens on 3128
+- [ ] Design 0002 (Proposed): answer its open questions; the control-plane client, enrollment and managed mode are not built
 
 ## Decided against (don't re-propose without reading this first)
 

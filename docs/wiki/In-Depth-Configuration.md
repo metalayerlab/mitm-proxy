@@ -44,7 +44,46 @@ Generated from the code: don't edit the table, run `uv run scripts/gen-wiki.py`.
 | `upstream.max_connections_per_host` | `MITM_PROXY_UPSTREAM_MAX_CONNECTIONS_PER_HOST` | `6` | The most upstream connections kept to one host, port and SNI. |
 <!-- generated:end settings -->
 
-<!-- guidance: below the table, explain anything a one-line description can't: how settings interact, valid ranges, performance trade-offs. -->
+### The allowlist
+
+Only hosts listed in `intercept.hosts` are intercepted; every other tunnel is relayed untouched. Entries are:
+
+| Entry | Matches |
+|---|---|
+| `example.org` | exactly `example.org` |
+| `*.example.org` | any subdomain, at any depth (`a.example.org`, `a.b.example.org`), but **not** `example.org` itself: list both if you want both |
+| `192.0.2.10`, `2001:db8::1` | that IP address (CONNECT to an IP literal) |
+
+Matching ignores case and a trailing dot, and international names are compared in their `xn--` form. Ports don't matter: a listed host is intercepted on every port. A lone `*` is refused: intercepting everything is not supported. `mitm-proxy scope check HOST` tells you what would happen to a host.
+
+The TLS name the client asks for (SNI) must be on the list too, or the tunnel is relayed raw: no certificate is ever made for a name nobody listed.
+
+### Middleware
+
+`middleware.available` registers installed middleware by name, as `name=module:attribute` (a `Middleware` subclass, created with no arguments, or an instance). `middleware.chain` lists the names to run, in order. The built-in `log` is always available. A chain name that isn't registered is a configuration error. See [Writing Middleware](Writing-Middleware).
+
+### Bodies and framing
+
+When any middleware applies to a flow, its bodies are read whole before the middleware sees them (one chunk each), up to `body.max_buffer_bytes`. A larger body is **streamed through without middleware**, and logged as a warning and counted in the `mitm_proxy_oversize_passthrough_total` metric. Flows no middleware applies to are never buffered.
+
+If a middleware that can rewrite bodies (one with a chunk hook) applies to a flow, the flow's bodies are sent with `Transfer-Encoding: chunked` (HTTP/1.1) or without a `content-length` (HTTP/2), because the final length isn't known in advance. Responses to `HEAD`, and `1xx`, `204` and `304` responses, never get framing headers added.
+
+### Timeouts
+
+All times are in milliseconds.
+
+- `proxy.peek_timeout_ms`: after a CONNECT to a listed host, how long to wait for the client's TLS ClientHello. Some protocols wait for the server to speak first, so a silent client isn't an error: the tunnel is relayed raw when the time is up.
+- `proxy.idle_timeout_ms`: a client connection or tunnel with no traffic for this long is closed. It's also how long the proxy waits for an origin's response.
+- `upstream.connect_timeout_ms`: connecting to an origin, TCP and TLS together, *including* waiting for a free connection when `upstream.max_connections_per_host` are all busy.
+- `middleware.hook_timeout_ms`: a hook that takes longer has failed, and that middleware is skipped for the rest of the flow.
+
+### Exposure
+
+Both listeners default to `127.0.0.1`. To let other machines use the proxy, set `proxy.host` (e.g. `0.0.0.0`) **and** `proxy.auth`: without credentials, anyone who can reach the port can use your proxy to reach anything it can (the proxy warns at startup). Containers bind `0.0.0.0` inside, and the published ports decide what's reachable.
+
+### The CA and origin trust
+
+The root CA comes from `ca.cert` + `ca.key` if set (both, or neither), otherwise from `<state_dir>/ca/`, where it's generated on first start. `upstream.extra_ca_file` adds CAs for origins with private certificates (an internal lab CA) **on top of** the system trust store. There is no way to switch off verification of origin certificates.
 
 ## Secrets
 
@@ -54,10 +93,40 @@ Never put a secret in the config file or in a plain environment variable that `d
 - Kubernetes: a Secret mounted as a volume (SOPS-encrypted in the GitOps repo)
 - systemd: `LoadCredential=` and `%d/<name>`
 
-<!-- guidance: list this project's secrets, or say there are none. -->
+This project's secrets:
+
+| Setting | What it grants | Supply it as |
+|---|---|---|
+| `proxy.auth` | Use of the proxy (`user:password`) | `MITM_PROXY_PROXY_AUTH_FILE` |
+| `ca.key` | Signing certificates that every client trusting the root accepts: the most sensitive value here | `MITM_PROXY_CA_KEY_FILE`, with `MITM_PROXY_CA_CERT_FILE` for the (public) certificate |
+
+When `ca.key` isn't set, the key lives in `<state_dir>/ca/ca-key.pem` with mode `0600`; the proxy warns if it's readable by anyone else.
 
 ## Examples
 
 A complete config file with every default is in [contrib/mitm-proxy.example.yaml](https://github.com/metalayerlab/mitm-proxy/blob/main/contrib/mitm-proxy.example.yaml).
 
-<!-- guidance: two or three real-world configurations, each with a sentence on when you'd use it. -->
+**On your laptop, looking at one API.** Defaults bind to loopback; log every flow to the API and its subdomains:
+
+```yaml
+intercept:
+  hosts: [api.example.org, "*.api.example.org"]
+middleware:
+  chain: [log]
+```
+
+**A shared proxy on a lab network,** with your own middleware and an internal CA the lab services use:
+
+```yaml
+proxy:
+  host: 0.0.0.0          # with proxy.auth from MITM_PROXY_PROXY_AUTH_FILE
+intercept:
+  hosts: ["*.lab.example.org"]
+middleware:
+  available: [strip=labtools.middleware:StripTracking]
+  chain: [strip, log]
+upstream:
+  extra_ca_file: /etc/mitm-proxy/lab-ca.pem
+```
+
+**Kubernetes,** with a stable CA from a Secret so clients don't have to re-trust it after every pod restart: the [Deployment](Deployment#kubernetes) manifests show `MITM_PROXY_CA_CERT_FILE` and `MITM_PROXY_CA_KEY_FILE` mounted from the `mitm-proxy` Secret.

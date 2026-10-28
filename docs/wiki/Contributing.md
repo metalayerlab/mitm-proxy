@@ -28,7 +28,14 @@ Never edit `CHANGELOG.md` or the version, and never push tags: release-please do
 - Settings go through `config.SETTINGS`. Secrets come from `_FILE`, and are never logged.
 - Prefer the standard library and existing dependencies. Justify every new one in the PR.
 
-<!-- guidance: project-specific rules (concurrency model, error types, naming), the kind of thing a reviewer keeps repeating. -->
+### Project rules
+
+- **One event loop, no threads.** Everything is asyncio. Work that blocks the loop (CPU-heavy code, blocking I/O) stalls the whole proxy, in middleware too.
+- **Never background a middleware hook.** The pipeline awaits each hook in line; `asyncio.create_task` around one breaks backpressure. A test enforces it.
+- **Protocol layers stay protocol layers.** `h1.py` and `h2.py` produce `IncomingRequest`s and `Responder`s; only `exchange.py` builds flows, runs middleware and picks framing.
+- **Errors:** raise the types in `errors.py`. Upstream failures become 502/504 responses, never exceptions out of a connection. No `assert` in `src/` (ruff S101).
+- **Read the snapshot once.** A connection uses the configuration snapshot current when it arrived; don't cache fields of `Config` elsewhere.
+- **Never weaken verification or the allowlist** "for testing": use `upstream.extra_ca_file` and test CAs instead.
 
 ## Working with AI assistants
 
