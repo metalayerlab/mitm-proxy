@@ -1,0 +1,37 @@
+# mitm-proxy under Docker Compose. Template-owned skeleton; see the wiki's
+# Deployment page.
+#
+#   docker compose -f contrib/docker/compose.yml up -d
+#   docker exec mitm-proxy mitm-proxy config     # effective config and sources
+#
+# Config: ./config/config.yaml (from contrib/mitm-proxy.example.yaml), mounted
+# read-only. Secrets: as files under ./secrets, passed with MITM_PROXY_<KEY>_FILE.
+
+services:
+  mitm-proxy:
+    image: ghcr.io/metalayerlab/mitm-proxy:0.0.0 # x-release-please-version
+    container_name: mitm-proxy
+    restart: unless-stopped
+
+    ports:
+      - "127.0.0.1:8080:8080"   # loopback only: put a reverse proxy in front
+
+    volumes:
+      - ./config:/etc/mitm-proxy:ro
+      - ./state:/var/lib/mitm-proxy
+      # - ./secrets:/run/secrets/mitm-proxy:ro
+
+    environment:
+      TZ: "Europe/London"
+      # MITM_PROXY_LOG_LEVEL: DEBUG
+      # MITM_PROXY_SOME_TOKEN_FILE: /run/secrets/mitm-proxy/some-token
+
+    # Hardening: read-only root, no new privileges, only the capabilities it needs
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop: [ALL]
+
+    # The image's HEALTHCHECK polls /healthz

@@ -1,0 +1,31 @@
+# mitm-proxy on Kubernetes: a kustomize base, applied directly or from Flux.
+# See the wiki's Deployment page.
+#
+#   kubectl apply -k contrib/k8s
+#
+# Overlays (per cluster or environment) live in the cluster's GitOps repo and
+# point at this directory: resources: [https://github.com/metalayerlab/mitm-proxy//contrib/k8s?ref=v0.0.0]
+#
+# Secrets: never here. Create them by hand, or SOPS-encrypt them in the GitOps
+# repo, and mount them as files (MITM_PROXY_<KEY>_FILE).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: mitm-proxy
+labels:
+  - pairs:
+      app.kubernetes.io/name: mitm-proxy
+      app.kubernetes.io/part-of: mitm-proxy
+    includeSelectors: false
+resources:
+  - namespace.yaml
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml
+# config.yaml becomes a ConfigMap; the hash suffix rolls the Deployment when it changes.
+configMapGenerator:
+  - name: mitm-proxy-config
+    files:
+      - config.yaml
+images:
+  - name: ghcr.io/metalayerlab/mitm-proxy
+    newTag: "0.0.0" # x-release-please-version

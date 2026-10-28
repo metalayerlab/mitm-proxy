@@ -1,0 +1,9 @@
+# The restricted Pod Security Standard: the Deployment is built to meet it.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: mitm-proxy
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

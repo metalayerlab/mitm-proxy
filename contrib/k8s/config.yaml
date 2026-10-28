@@ -1,0 +1,7 @@
+# mitm-proxy config in the cluster (non-secret settings only). Reference:
+# contrib/mitm-proxy.example.yaml and the wiki's In-Depth-Configuration page.
+log_level: INFO
+listen:
+  host: 0.0.0.0
+  port: 8080
+state_dir: /var/lib/mitm-proxy

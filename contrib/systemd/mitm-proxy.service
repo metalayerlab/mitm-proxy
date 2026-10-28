@@ -1,0 +1,64 @@
+# mitm-proxy. Install to /etc/systemd/system/mitm-proxy.service; see the
+# wiki's Deployment page (systemd). Template-owned skeleton: loosen the sandbox
+# only with a comment saying why.
+#
+#   install -Dm644 contrib/systemd/mitm-proxy.sysusers /usr/lib/sysusers.d/mitm-proxy.conf
+#   systemd-sysusers
+#   UV_PYTHON_INSTALL_DIR=/opt/uv-python uv venv /opt/mitm-proxy
+#   uv pip install --python /opt/mitm-proxy mitm-proxy   # or the wheel from a release
+#   install -Dm644 contrib/systemd/mitm-proxy.service /etc/systemd/system/
+#   systemctl daemon-reload && systemctl enable --now mitm-proxy
+#
+# ProtectHome= hides /root and /home, so the venv and its Python must live
+# outside them (hence UV_PYTHON_INSTALL_DIR above).
+[Unit]
+Description=mitm-proxy: Async Python MITM proxy with a self-signed CA — HTTP/1.1 & HTTP/2, pluggable middleware for inspecting and rewriting traffic in flight.
+Documentation=https://github.com/metalayerlab/mitm-proxy/wiki
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=exec
+User=mitm-proxy
+Group=mitm-proxy
+ExecStart=/opt/mitm-proxy/bin/mitm-proxy serve -c /etc/mitm-proxy/config.yaml
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=15
+Environment=TZ=Europe/London
+
+# /var/lib/mitm-proxy, the config's default state_dir
+StateDirectory=mitm-proxy
+StateDirectoryMode=0700
+ConfigurationDirectory=mitm-proxy
+UMask=0077
+
+# Sandboxing: it serves HTTP on a TCP port and writes only its state.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+ProcSubset=pid
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RemoveIPC=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+
+[Install]
+WantedBy=multi-user.target

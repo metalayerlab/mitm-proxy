@@ -1,0 +1,3 @@
+# The mitm-proxy system user. Install to /usr/lib/sysusers.d/mitm-proxy.conf
+# (or /etc/sysusers.d/) and run `systemd-sysusers`.
+u mitm-proxy - "mitm-proxy" /var/lib/mitm-proxy -
