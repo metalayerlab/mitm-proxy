@@ -516,3 +516,23 @@ def test_the_origin_write_timeout_follows_a_config_change(tmp_path: Path) -> Non
     proxy.apply(make_config(tmp_path, MITM_PROXY_PROXY_IDLE_TIMEOUT_MS="9000"))
     assert isinstance(proxy.connector, TCPConnector)
     assert (proxy.connector.write_timeout, proxy.client_write_timeout) == (9.0, 9.0)
+
+
+def test_the_upstream_pool_follows_a_config_change(tmp_path: Path) -> None:
+    """Like F4: the pool's settings were fixed at startup; a new configuration applies too."""
+    from mitm_proxy.server import ProxyServer
+    from tests.unit.test_server import make_config
+
+    proxy = ProxyServer(make_config(tmp_path))
+    proxy.apply(
+        make_config(
+            tmp_path,
+            MITM_PROXY_PROXY_IDLE_TIMEOUT_MS="9000",
+            MITM_PROXY_UPSTREAM_CONNECT_TIMEOUT_MS="3000",
+            MITM_PROXY_UPSTREAM_IDLE_TIMEOUT_MS="4000",
+            MITM_PROXY_UPSTREAM_MAX_CONNECTIONS_PER_HOST="2",
+        )
+    )
+    pool = proxy.pool
+    assert (pool.read_timeout, pool.connect_timeout, pool.idle_timeout) == (9.0, 3.0, 4.0)
+    assert pool.max_per_host == 2

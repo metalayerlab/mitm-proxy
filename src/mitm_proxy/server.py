@@ -142,8 +142,13 @@ class ProxyServer:
     def apply(self, config: Config) -> None:
         """Swap in a new configuration; connections already open keep the old one."""
         self.snapshot = self._build(config, None)
+        # The pool and the connector are shared, not part of the snapshot: give them the new
+        # values. They're read when used, so they apply to what happens from now on.
+        self.pool.max_per_host = config.upstream_max_connections_per_host
+        self.pool.idle_timeout = config.upstream_idle_timeout_ms / 1000
+        self.pool.connect_timeout = config.upstream_connect_timeout_ms / 1000
+        self.pool.read_timeout = config.idle_timeout_ms / 1000
         if isinstance(self.connector, TCPConnector):
-            # Origin connections opened from now on, like client connections, use the new value.
             self.connector.write_timeout = config.idle_timeout_ms / 1000
         self.metrics.config_applies.inc("applied")
 

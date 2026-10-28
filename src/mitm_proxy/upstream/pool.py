@@ -244,9 +244,9 @@ class ConnectionPool:
             self._sweeper = asyncio.create_task(self._sweep())
 
     async def _sweep(self) -> None:
-        interval = max(0.05, min(self.idle_timeout / 2, 5.0))
         while True:
-            await asyncio.sleep(interval)
+            # Read each time: a new configuration may change idle_timeout.
+            await asyncio.sleep(max(0.05, min(self.idle_timeout / 2, 5.0)))
             await self.sweep_once()
 
     async def sweep_once(self) -> None:
