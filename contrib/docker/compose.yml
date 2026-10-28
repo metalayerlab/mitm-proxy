@@ -14,7 +14,8 @@ services:
     restart: unless-stopped
 
     ports:
-      - "127.0.0.1:8080:8080"   # loopback only: put a reverse proxy in front
+      - "127.0.0.1:8080:8080"   # admin API, loopback only: put a reverse proxy in front
+      - "127.0.0.1:3128:3128"   # the proxy; publish beyond loopback only with proxy.auth set
 
     volumes:
       - ./config:/etc/mitm-proxy:ro
@@ -23,8 +24,11 @@ services:
 
     environment:
       TZ: "Europe/London"
+      # Inside the container, listen on all interfaces; the ports above decide exposure.
+      MITM_PROXY_LISTEN_HOST: 0.0.0.0
+      MITM_PROXY_PROXY_HOST: 0.0.0.0
       # MITM_PROXY_LOG_LEVEL: DEBUG
-      # MITM_PROXY_SOME_TOKEN_FILE: /run/secrets/mitm-proxy/some-token
+      # MITM_PROXY_PROXY_AUTH_FILE: /run/secrets/mitm-proxy/proxy-auth   # user:password
 
     # Hardening: read-only root, no new privileges, only the capabilities it needs
     read_only: true

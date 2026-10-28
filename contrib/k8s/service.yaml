@@ -11,3 +11,4 @@ spec:
     app.kubernetes.io/component: server
   ports:
     - {name: http, port: 8080, targetPort: http}
+    - {name: proxy, port: 3128, targetPort: proxy}

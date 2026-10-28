@@ -5,3 +5,10 @@ listen:
   host: 0.0.0.0
   port: 8080
 state_dir: /var/lib/mitm-proxy
+proxy:
+  # Anyone the NetworkPolicy lets in can use the proxy: set proxy.auth (a Secret,
+  # mounted as MITM_PROXY_PROXY_AUTH_FILE; see deployment.yaml).
+  host: 0.0.0.0
+  port: 3128
+intercept:
+  hosts: []
