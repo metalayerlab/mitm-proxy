@@ -9,3 +9,8 @@ paths = [
   # lock files: integrity hashes look like secrets
   '''(^|/)(uv\.lock|pnpm-lock\.yaml|package-lock\.json)$''',
 ]
+regexes = [
+  # The WebSocket handshake key from RFC 6455's example, base64 of "the sample nonce":
+  # a fixed public test value in the WebSocket tests, matched exactly.
+  '''dGhlIHNhbXBsZSBub25jZQ==''',
+]
