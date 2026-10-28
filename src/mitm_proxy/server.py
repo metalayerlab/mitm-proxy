@@ -197,6 +197,7 @@ class ProxyServer:
             pipeline=snap.pipeline,
             target=None,
             scope=snap.allowlist,
+            server_timing=snap.config.server_timing,
         )
 
     # Tunnels
@@ -249,6 +250,7 @@ class ProxyServer:
             idle_timeout=idle,
             pipeline=snap.pipeline,
             target=Target(conn.target_host, conn.target_port, tls=True, sni=sni),
+            server_timing=config.server_timing,
         )
 
         async def handler(incoming: IncomingRequest, responder: Responder) -> None:

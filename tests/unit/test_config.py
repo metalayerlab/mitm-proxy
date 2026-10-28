@@ -183,3 +183,13 @@ def test_example_config_is_the_defaults() -> None:
     cfg = load_config(example, environ={})
     defaults = load_config(example.with_name("missing.yaml"), environ={})
     assert cfg.values == defaults.values
+
+
+def test_server_timing_is_off_by_default_and_set_from_file_or_env(
+    write_config: Callable[..., Path],
+) -> None:
+    path = write_config("proxy:\n  server_timing: true\n")
+    assert load_config(path.parent / "missing.yaml", environ={}).server_timing is False
+    assert load_config(path, environ={}).server_timing is True
+    env = {"MITM_PROXY_PROXY_SERVER_TIMING": "false"}
+    assert load_config(path, environ=env).server_timing is False

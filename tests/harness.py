@@ -127,6 +127,7 @@ class Bench:
         max_buffer: int = 1 << 20,
         target: Target | None = DEFAULT_TARGET,
         scope: Allowlist | None = None,
+        server_timing: bool = False,
     ) -> ExchangeContext:
         return ExchangeContext(
             pool=self.pool,
@@ -138,6 +139,7 @@ class Bench:
             pipeline=Pipeline(middleware or [], hook_timeout=1),
             target=target,
             scope=scope,
+            server_timing=server_timing,
         )
 
     def proxy(self, ctx: ExchangeContext, proxy_mode: ProxyMode | None = None) -> MemoryStream:

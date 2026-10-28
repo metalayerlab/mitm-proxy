@@ -29,6 +29,7 @@ Generated from the code: don't edit the table, run `uv run scripts/gen-wiki.py`.
 | `proxy.peek_timeout_ms` | `MITM_PROXY_PROXY_PEEK_TIMEOUT_MS` | `1000` | How long to wait for a TLS ClientHello after CONNECT before relaying the tunnel raw. |
 | `proxy.idle_timeout_ms` | `MITM_PROXY_PROXY_IDLE_TIMEOUT_MS` | `120000` | Close a client connection or tunnel after this long with no traffic. |
 | `proxy.shutdown_grace_ms` | `MITM_PROXY_PROXY_SHUTDOWN_GRACE_MS` | `10000` | On SIGTERM, how long in-flight connections get to finish. |
+| `proxy.server_timing` | `MITM_PROXY_PROXY_SERVER_TIMING` | `False` | Add a `Server-Timing` header (connect, origin, middleware, proxy times) to every intercepted response, for browser devtools. Tells pages they were intercepted. |
 | `intercept.hosts` | `MITM_PROXY_INTERCEPT_HOSTS` | *(none)* | The allowlist: hosts to intercept (`example.org`, `*.example.org`, IP literals). Everything else is tunnelled untouched. Empty: intercept nothing. |
 | `middleware.available` | `MITM_PROXY_MIDDLEWARE_AVAILABLE` | *(none)* | Installed middleware that may run, as `name=module:attribute`. The built-in `log` is always available. |
 | `middleware.chain` | `MITM_PROXY_MIDDLEWARE_CHAIN` | *(none)* | The middleware to run, by name, in order. |
@@ -82,6 +83,26 @@ All times are in milliseconds.
 ### Exposure
 
 Both listeners default to `127.0.0.1`. To let other machines use the proxy, set `proxy.host` (e.g. `0.0.0.0`) **and** `proxy.auth`: without credentials, anyone who can reach the port can use your proxy to reach anything it can (the proxy warns at startup). Containers bind `0.0.0.0` inside, and the published ports decide what's reachable.
+
+### Server-Timing
+
+`proxy.server_timing: true` adds one `Server-Timing` field to every intercepted response, so a browser's devtools (Network → a request → Timing) show where the time went:
+
+```text
+server-timing: mitm-connect;dur=0.0;desc="reused", mitm-origin;dur=79.3, mitm-mw;dur=0.4, mitm-proxy;dur=80.1
+```
+
+| Metric | Meaning | Present when |
+|---|---|---|
+| `mitm-connect` | Waiting for an upstream connection; `desc` is `reused` or `new` | A connection was leased |
+| `mitm-origin` | The origin's share: request sent to response headers | The origin answered |
+| `mitm-mw` | Time in middleware hooks so far | Middleware ran |
+| `mitm-local` | `desc` names the middleware that answered or denied the request | Middleware answered |
+| `mitm-proxy` | From the request arriving to the response head going out | Always |
+
+`mitm-proxy` is not a total: a header goes out before the body, so the body's transfer isn't in it (the browser shows that as Content Download). The field covers every intercepted flow, whether or not middleware applies (it adds no buffering), including responses middleware answers itself, denies, and the proxy's own `502`/`504`. It's never added to relayed tunnels or WebSocket upgrades. An origin's own `Server-Timing` is kept; the proxy's field follows it, and the `mitm-` prefix keeps the names apart.
+
+It's off by default because it tells every intercepted page that it was intercepted. See [Security](Security).
 
 ### The CA and origin trust
 

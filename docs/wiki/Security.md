@@ -27,6 +27,8 @@ mitm-proxy decrypts traffic on purpose, so the question is who else can use that
 - With access to the proxy port: an open relay into your network, and interception of listed hosts' traffic as it passes.
 - With the admin API: the version, configuration hash and counters (no secrets, no hostnames).
 
+**What the proxy reveals to clients:** by default, only what interception needs (its certificates, and its own error responses: `403`, `407`, `502`, `504`). With `proxy.server_timing` on, every intercepted response also carries the proxy's timings, and middleware names when middleware answered. A page's own scripts can read them (`PerformanceResourceTiming.serverTiming`) and report them to the site, so a site can tell it was intercepted. The proxy never sends `Timing-Allow-Origin`, so other sites' scripts can't read them. Turn it on deliberately, for debugging.
+
 **Out of scope:**
 
 - clients that choose to trust the root;

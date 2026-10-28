@@ -99,6 +99,12 @@ SETTINGS: tuple[Setting, ...] = (
         "On SIGTERM, how long in-flight connections get to finish.",
     ),
     Setting(
+        "proxy.server_timing",
+        False,
+        "Add a `Server-Timing` header (connect, origin, middleware, proxy times) to every "
+        "intercepted response, for browser devtools. Tells pages they were intercepted.",
+    ),
+    Setting(
         "intercept.hosts",
         "",
         "The allowlist: hosts to intercept (`example.org`, `*.example.org`, IP literals). "
@@ -182,6 +188,7 @@ class Config:
     peek_timeout_ms: int = 1000
     idle_timeout_ms: int = 120000
     shutdown_grace_ms: int = 10000
+    server_timing: bool = False
     intercept_hosts: tuple[str, ...] = ()
     # name -> "module:attribute", including the built-in "log".
     middleware_available: Mapping[str, str] = field(
@@ -383,6 +390,7 @@ def load_config(path: Path | None = None, environ: Mapping[str, str] | None = No
         peek_timeout_ms=_int(values, "proxy.peek_timeout_ms"),
         idle_timeout_ms=_int(values, "proxy.idle_timeout_ms"),
         shutdown_grace_ms=_int(values, "proxy.shutdown_grace_ms"),
+        server_timing=values["proxy.server_timing"] is True,
         intercept_hosts=hosts,
         middleware_available=available,
         middleware_chain=chain,

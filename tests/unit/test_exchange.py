@@ -451,3 +451,120 @@ async def test_a_passed_through_request_body_is_complete_when_sent() -> None:
     t = grab.flow.timings
     assert t.request_complete is not None and t.request_complete == t.request_sent
     await b.close()
+
+
+def _metrics(reply_headers: Headers) -> dict[str, str]:
+    """The proxy's Server-Timing metrics, by name (the field after the origin's)."""
+    fields = reply_headers.get_all("server-timing")
+    ours = [f for f in fields if f.startswith("mitm-")]
+    assert len(ours) == 1, fields
+    return {part.split(";")[0]: part for part in ours[0].split(", ")}
+
+
+@pytest.mark.parametrize(("client_proto", "origin_proto"), PAIRS)
+async def test_server_timing_is_added_after_the_origins_own(
+    client_proto: str, origin_proto: str
+) -> None:
+    origin = Origin(protocol=origin_proto, headers=[("server-timing", 'db;dur=12, app;desc="x"')])
+    b = bench(origin)
+    ctx = b.context(client_proto, [("watch", Watch())], server_timing=True)
+    client = await client_for(b.proxy(ctx), client_proto)
+    reply = await send(client)
+    await send(client)
+    second = await send(client)
+    assert reply.headers.get_all("server-timing")[0] == 'db;dur=12, app;desc="x"'
+    first = _metrics(reply.headers)
+    assert set(first) == {"mitm-connect", "mitm-origin", "mitm-mw", "mitm-proxy"}
+    assert first["mitm-connect"].endswith(';desc="new"')
+    assert _metrics(second.headers)["mitm-connect"].endswith(';desc="reused"')
+    assert reply.body == b"hello from origin"
+    await b.close()
+
+
+async def test_server_timing_is_off_by_default() -> None:
+    b = bench()
+    client = await client_for(b.proxy(b.context("h2")), "h2")
+    assert "server-timing" not in (await send(client)).headers
+    await b.close()
+
+
+async def test_server_timing_needs_no_middleware() -> None:
+    b = bench()
+    client = await client_for(b.proxy(b.context("h2", server_timing=True)), "h2")
+    metrics = _metrics((await send(client)).headers)
+    assert set(metrics) == {"mitm-connect", "mitm-origin", "mitm-proxy"}
+    await b.close()
+
+
+async def test_server_timing_names_the_middleware_that_answered_or_denied() -> None:
+    class Cache(Middleware):
+        async def on_request(self, flow: Flow) -> Action:
+            flow.response = Response.make(200, b"cached")
+            return Action.STOP
+
+    class Deny(Middleware):
+        def applies_to(self, flow: Flow) -> bool:
+            return flow.request.path == "/blocked"
+
+        async def on_request(self, flow: Flow) -> Action:
+            return Action.DENY
+
+    b = bench()
+    ctx = b.context("http/1.1", [("guard", Deny()), ("cache", Cache())], server_timing=True)
+    client = await client_for(b.proxy(ctx), "http/1.1")
+    denied = await send(client, path="/blocked")
+    cached = await send(client)
+    assert denied.status == 403
+    assert _metrics(denied.headers)["mitm-local"] == 'mitm-local;desc="guard"'
+    metrics = _metrics(cached.headers)
+    assert (cached.status, cached.body) == (200, b"cached")
+    assert metrics["mitm-local"] == 'mitm-local;desc="cache"'
+    assert "mitm-connect" not in metrics and "mitm-origin" not in metrics
+    assert b.origin.connections == 0
+    await b.close()
+
+
+async def test_server_timing_on_a_proxy_error() -> None:
+    origin = Origin()
+    origin.fail_connect = UpstreamConnectError("refused")
+    b = bench(origin)
+    client = await client_for(b.proxy(b.context("http/1.1", server_timing=True)), "http/1.1")
+    reply = await send(client)
+    assert reply.status == 502
+    assert set(_metrics(reply.headers)) == {"mitm-proxy"}
+    await b.close()
+
+
+async def test_server_timing_only_on_intercepted_plain_http() -> None:
+    b = bench()
+    ctx = b.context("http/1.1", target=None, scope=Allowlist(["example.org"]), server_timing=True)
+    client = await client_for(b.proxy(ctx), "http/1.1")
+    inside = await send(client, path="http://example.org/a")
+    outside = await send(client, path="http://example.net/b", authority="example.net")
+    assert "mitm-proxy" in _metrics(inside.headers)
+    assert "server-timing" not in outside.headers
+    await b.close()
+
+
+async def test_server_timing_never_on_a_websocket_upgrade() -> None:
+    b = bench(Origin(websocket=True))
+    client_stream = b.proxy(b.context("http/1.1", server_timing=True))
+    await client_stream.write(
+        b"GET /ws HTTP/1.1\r\nHost: example.org\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n"
+        b"Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+    )
+    head = b""
+    while b"\r\n\r\n" not in head:
+        head += await client_stream.read()
+    assert head.startswith(b"HTTP/1.1 101")
+    assert b"server-timing" not in head.lower()
+    await client_stream.close()
+    await b.close()
+
+
+def test_server_timing_quotes_a_middleware_name() -> None:
+    from mitm_proxy.exchange import server_timing
+    from tests.unit.test_pipeline import make_flow
+
+    value = server_timing(make_flow(), 'we"ird\\name\n')
+    assert 'mitm-local;desc="we\\"ird\\\\name"' in value

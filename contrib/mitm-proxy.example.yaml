@@ -26,6 +26,8 @@ proxy:
   peek_timeout_ms: 1000
   idle_timeout_ms: 120000
   shutdown_grace_ms: 10000
+  # Server-Timing header on intercepted responses (browser devtools); tells pages they were intercepted
+  server_timing: false
 
 # Hosts to intercept; everything else is tunnelled untouched.
 intercept:

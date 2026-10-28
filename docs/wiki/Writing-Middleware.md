@@ -85,6 +85,8 @@ Headers are a case-insensitive multimap with lower-case names (`get`, `get_all`,
 | `response_headers` | The origin's response headers arrived |
 | `complete` | The last byte went to the client (after every hook has run, so hooks never see it set) |
 
+With `proxy.server_timing` on, the proxy adds its own `Server-Timing` field to the response head after your response hooks have run, so you never see it in `flow.response.headers` and can't remove it. An origin's own `Server-Timing` is an ordinary header you can read or change.
+
 The derived durations, in seconds, are `connect` (waiting for an upstream connection), `ttfb` (the origin's share: request sent to response headers), `middleware_total` and `total`. `timings.middleware` holds the time each middleware has spent in its hooks so far, by name.
 
 ```python

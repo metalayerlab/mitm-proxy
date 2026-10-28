@@ -50,6 +50,8 @@ Turn on the `log` middleware (`middleware.chain: [log]`) and read the end of eac
 
 The line is written from the response hook, before the response goes to the client, so `total` runs to when the whole response has arrived. `-` means that stage didn't happen (for example, `connect=-` on a response a middleware sent itself).
 
+In a browser, set `proxy.server_timing: true` and open devtools (Network → a request → Timing): the same breakdown appears under Server Timing as `mitm-connect`, `mitm-origin`, `mitm-mw` and `mitm-proxy`, and `mitm-local` names the middleware that answered a request itself. These show up even when the `log` middleware doesn't run. See [In-Depth Configuration](In-Depth-Configuration).
+
 ### `… body is over body.max_buffer_bytes …; streaming it through without middleware`
 
 That body was bigger than `body.max_buffer_bytes`, so middleware didn't see it. Raise the limit if you need to inspect such bodies (they're held in memory).

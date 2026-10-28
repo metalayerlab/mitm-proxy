@@ -50,13 +50,20 @@ class ExchangeContext:
     # Intercepted TLS: the fixed upstream. None: plain-HTTP proxying, routed per request.
     target: Target | None = None
     scope: Allowlist | None = None  # plain-HTTP proxying: which hosts get middleware
+    server_timing: bool = False  # add a Server-Timing field to intercepted responses (0004)
 
     def route(self, request: Request) -> tuple[Target, Pipeline | None, str]:
         if self.target is not None:
             return self.target, self.pipeline, FlowType.HTTP.value
-        host, port = request.host, request.port
-        intercepted = self.scope is not None and self.scope.match(host) is not None
-        return Target(host, port, tls=False), self.pipeline if intercepted else None, "plain_http"
+        intercepted = self.intercepts(request)
+        target = Target(request.host, request.port, tls=False)
+        return target, self.pipeline if intercepted else None, "plain_http"
+
+    def intercepts(self, request: Request) -> bool:
+        """A TLS-intercepted flow, or plain HTTP to a listed host."""
+        if self.target is not None:
+            return True
+        return self.scope is not None and self.scope.match(request.host) is not None
 
 
 class _Body:
@@ -110,13 +117,51 @@ async def _chain(first: list[bytes], rest: AsyncIterator[bytes]) -> AsyncIterato
         yield chunk
 
 
+def _ms(seconds: float) -> str:
+    return f"{seconds * 1000:.1f}"
+
+
+def _quoted(text: str) -> str:
+    """A quoted-string (RFC 9110) of the printable ASCII in text."""
+    safe = "".join(c for c in text if " " <= c <= "~")
+    return '"' + safe.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def server_timing(flow: Flow, local: str | None = None) -> str:
+    """The proxy's Server-Timing field for flow, as of now (the response head going out).
+
+    local names the middleware that answered or denied the request. Metric names
+    carry a mitm- prefix so they can't collide with an origin's own.
+    """
+    t = flow.timings
+    parts: list[str] = []
+    if t.connect is not None:
+        reused = "reused" if t.connection_reused else "new"
+        parts.append(f'mitm-connect;dur={_ms(t.connect)};desc="{reused}"')
+    if t.ttfb is not None:
+        parts.append(f"mitm-origin;dur={_ms(t.ttfb)}")
+    if t.middleware:
+        parts.append(f"mitm-mw;dur={_ms(t.middleware_total)}")
+    if local is not None:
+        parts.append(f"mitm-local;desc={_quoted(local)}")
+    parts.append(f"mitm-proxy;dur={_ms(time.monotonic() - t.started)}")
+    return ", ".join(parts)
+
+
 async def send_simple(
-    responder: Responder, status: int, message: str, *, head_only: bool = False
+    responder: Responder,
+    status: int,
+    message: str,
+    *,
+    head_only: bool = False,
+    timing: str | None = None,
 ) -> None:
-    """A short plain-text response from the proxy itself."""
+    """A short plain-text response from the proxy itself; timing: a Server-Timing value."""
     body = (message + "\n").encode()
     response = Response.make(status, body)
     response.headers.set("content-length", str(len(body)))
+    if timing is not None:
+        response.headers.add("server-timing", timing)
     await responder.start(response, response.headers, end=head_only)
     if not head_only:
         await responder.data(body)
@@ -134,8 +179,9 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
         type=FlowType.HTTP, protocol=ctx.protocol, client_conn=ctx.client_conn, request=request
     )
     ctx.metrics.flows.inc(kind)
+    timed = ctx.server_timing and ctx.intercepts(request)
     try:
-        await _exchange(ctx, flow, incoming, responder, target, pipeline)
+        await _exchange(ctx, flow, incoming, responder, target, pipeline, timed)
     finally:
         flow.timings.complete = time.monotonic()
 
@@ -147,8 +193,13 @@ async def _exchange(
     responder: Responder,
     target: Target,
     pipeline: Pipeline | None,
+    timed: bool,
 ) -> None:
     request = flow.request
+
+    def timing(local: str | None = None) -> str | None:
+        return server_timing(flow, local) if timed else None
+
     run = pipeline.start(flow) if pipeline is not None else None
     if run is not None:
         run.on_failure = lambda name: ctx.metrics.middleware_failures.inc(name)
@@ -176,7 +227,11 @@ async def _exchange(
         if outcome.action is Action.DENY:
             log.info("flow %s denied by middleware %r", flow.id, outcome.by)
             await send_simple(
-                responder, 403, f"denied by middleware {outcome.by}", head_only=head_only
+                responder,
+                403,
+                f"denied by middleware {outcome.by}",
+                head_only=head_only,
+                timing=timing(outcome.by),
             )
             return
         if outcome.action is Action.STOP:
@@ -187,9 +242,10 @@ async def _exchange(
                     502,
                     f"middleware {outcome.by} stopped the request",
                     head_only=head_only,
+                    timing=timing(outcome.by),
                 )
                 return
-            await _respond(ctx, flow, None, responder, None)
+            await _respond(ctx, flow, None, responder, None, timed=timed, local=outcome.by)
             return
         if incoming.has_body and isinstance(request.body, BufferedBodyStream):
             data = await active.run_request_chunk(await request.body.read_all(), True)
@@ -217,9 +273,9 @@ async def _exchange(
     except UpstreamError as e:
         status = 504 if isinstance(e, UpstreamTimeout) else 502
         log.warning("flow %s: %s", flow.id, e)
-        await send_simple(responder, status, str(e), head_only=head_only)
+        await send_simple(responder, status, str(e), head_only=head_only, timing=timing())
         return
-    await _respond(ctx, flow, upstream, responder, active)
+    await _respond(ctx, flow, upstream, responder, active, timed=timed)
 
 
 async def _send_upstream(
@@ -283,8 +339,14 @@ async def _respond(
     upstream: UpstreamResponse | None,
     responder: Responder,
     active: FlowPipeline | None,
+    *,
+    timed: bool = False,
+    local: str | None = None,
 ) -> None:
-    """Run the response hooks (if any), frame the response, and send it to the client."""
+    """Run the response hooks (if any), frame the response, and send it to the client.
+
+    timed: add the proxy's Server-Timing field; local: the middleware that answered.
+    """
     request = flow.request
     source = _Body(upstream.body if upstream is not None else empty())
     try:
@@ -313,6 +375,7 @@ async def _respond(
                         502,
                         f"denied by middleware {outcome.by}",
                         head_only=request.method == "HEAD",
+                        timing=server_timing(flow, outcome.by) if timed else None,
                     )
                     return
                 response = flow.response or response
@@ -333,6 +396,9 @@ async def _respond(
         headers = framing.apply(
             response.headers, response_framing, length, h1=responder.protocol == "http/1.1"
         )
+        if timed:
+            # After the hooks, like the framing headers: middleware never sees this field.
+            headers.add("server-timing", server_timing(flow, local))
         await responder.start(response, headers, end=not allows_body)
         if allows_body:
             async for chunk in body:
