@@ -146,3 +146,24 @@ async def test_an_applies_to_failure_is_counted() -> None:
     assert (await send(client)).status == 200  # skipped, and the flow carries on
     assert b.metrics.middleware_failures.values == {("broken",): 1.0}
     await b.close()
+
+
+async def test_a_failed_websocket_switch_closes_the_upstream_socket() -> None:
+    """Finding 7: if the client is gone when switching, the origin's socket is closed."""
+
+    async def switch(reply: Headers) -> object:
+        raise ConnectionResetError("the client went away")
+
+    b = bench(Origin(websocket=True))
+    incoming = IncomingRequest(
+        Request("GET", "https", "example.org", "/ws"),
+        _no_body(),
+        False,
+        websocket=switch,  # type: ignore[arg-type]  # raises before returning a stream
+        raw_headers=Headers([("upgrade", "websocket")]),
+    )
+    with pytest.raises(ConnectionResetError):
+        await handle(b.context("http/1.1"), incoming, _GoneBeforeTheHead())
+    # The origin echoes until its socket closes: its task ends only if the proxy closed it.
+    await asyncio.wait_for(asyncio.gather(*b.origin.tasks), 2)
+    await b.close()

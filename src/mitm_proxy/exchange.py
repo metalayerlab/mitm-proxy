@@ -8,6 +8,7 @@ lets the two legs speak different protocols.
 
 from __future__ import annotations
 
+import contextlib
 import logging
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
@@ -644,6 +645,13 @@ async def _websocket(
     reply = upstream.response.headers.copy()
     reply.set("connection", "Upgrade")
     reply.set("upgrade", incoming.raw_headers.get("upgrade") or "websocket")
-    client = await switch(reply)
+    try:
+        client = await switch(reply)
+    except BaseException:
+        # The client is gone (or this task was cancelled) before the relay took over the
+        # upstream socket; relay() closes both ends, but it never started.
+        with contextlib.suppress(OSError, ConnectionError):
+            await upstream.switched.close()
+        raise
     tally.relayed = (0, 0)
     tally.relayed = await relay(client, upstream.switched, idle_timeout=ctx.idle_timeout)
