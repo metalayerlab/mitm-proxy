@@ -8,8 +8,10 @@ metadata:
     app.kubernetes.io/component: server
 spec:
   replicas: 1
-  # State is on an emptyDir: swap it for a PersistentVolumeClaim (and keep
-  # Recreate, so there are never two writers) if it must survive the pod.
+  # State is on an emptyDir, so the root CA is regenerated whenever the pod is
+  # replaced and every client must trust the new one. For a stable CA, swap it for
+  # a PersistentVolumeClaim (and keep Recreate, so there are never two writers),
+  # or supply the CA from a Secret (MITM_PROXY_CA_CERT_FILE / MITM_PROXY_CA_KEY_FILE).
   strategy:
     type: Recreate
   selector:
@@ -40,8 +42,13 @@ spec:
           env:
             - {name: TZ, value: "Europe/London"}
             - {name: MITM_PROXY_CONFIG, value: /etc/mitm-proxy/config.yaml}
+            # With the "secrets" volume below:
+            # - {name: MITM_PROXY_PROXY_AUTH_FILE, value: /run/secrets/mitm-proxy/proxy-auth}
+            # - {name: MITM_PROXY_CA_CERT_FILE, value: /run/secrets/mitm-proxy/ca.pem}
+            # - {name: MITM_PROXY_CA_KEY_FILE, value: /run/secrets/mitm-proxy/ca-key.pem}
           ports:
             - {name: http, containerPort: 8080}
+            - {name: proxy, containerPort: 3128}
           readinessProbe:
             httpGet: {path: /readyz, port: http}
             periodSeconds: 10
@@ -56,6 +63,7 @@ spec:
             - {name: config, mountPath: /etc/mitm-proxy, readOnly: true}
             - {name: state, mountPath: /var/lib/mitm-proxy}
             - {name: tmp, mountPath: /tmp}
+            # - {name: secrets, mountPath: /run/secrets/mitm-proxy, readOnly: true}
       volumes:
         - name: config
           configMap: {name: mitm-proxy-config}
@@ -63,3 +71,5 @@ spec:
           emptyDir: {}
         - name: tmp
           emptyDir: {medium: Memory, sizeLimit: 64Mi}
+        # - name: secrets
+        #   secret: {secretName: mitm-proxy, defaultMode: 0400}

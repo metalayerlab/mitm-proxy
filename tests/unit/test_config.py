@@ -93,3 +93,109 @@ def test_bool_coercion_rejects_garbage() -> None:
 
     with pytest.raises(ConfigError, match="expected bool"):
         _coerce(Setting("flag", False, "a flag"), "maybe")
+
+
+def test_new_defaults(tmp_path: Path) -> None:
+    cfg = load_config(tmp_path / "missing.yaml", environ={})
+    assert cfg.host == "127.0.0.1"
+    assert (cfg.proxy_host, cfg.proxy_port) == ("127.0.0.1", 3128)
+    assert cfg.intercept_hosts == ()
+    assert cfg.middleware_chain == ()
+    assert cfg.middleware_available == {}
+    assert (cfg.access_log, cfg.access_log_relayed) == (False, False)
+    assert cfg.values["intercept.hosts"] == ()
+
+
+def test_lists_from_yaml_and_env(write_config: Callable[..., Path]) -> None:
+    path = write_config("intercept:\n  hosts: [example.org, '*.example.org']\n")
+    assert load_config(path, environ={}).intercept_hosts == ("example.org", "*.example.org")
+    env = {"MITM_PROXY_INTERCEPT_HOSTS": "example.org, *.example.net ,"}
+    assert load_config(path, environ=env).intercept_hosts == ("example.org", "*.example.net")
+
+
+def test_invalid_allowlist_entry(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match=r"intercept\.hosts"):
+        load_config(tmp_path / "x.yaml", environ={"MITM_PROXY_INTERCEPT_HOSTS": "*"})
+
+
+def test_middleware_registry_and_chain(write_config: Callable[..., Path]) -> None:
+    path = write_config("middleware:\n  available: ['strip=pkg.mod:Strip']\n  chain: [strip]\n")
+    cfg = load_config(path, environ={})
+    assert cfg.middleware_available["strip"] == "pkg.mod:Strip"
+    assert cfg.middleware_chain == ("strip",)
+
+
+@pytest.mark.parametrize(
+    ("yaml_text", "message"),
+    [
+        ("middleware:\n  chain: [nope]\n", "not in middleware.available"),
+        ("middleware:\n  available: ['a=m:A']\n  chain: [a, a]\n", "listed twice"),
+        ("middleware:\n  chain: [log]\n", "replaced by the proxy.access_log setting"),
+        ("middleware:\n  available: ['x=no-colon']\n", "name=module:attribute"),
+        ("middleware:\n  available: ['x=a.b:C', 'x=d.e:F']\n", "defined twice"),
+    ],
+)
+def test_middleware_errors(write_config: Callable[..., Path], yaml_text: str, message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        load_config(write_config(yaml_text), environ={})
+
+
+@pytest.mark.parametrize("auth", ["nocolon", ":password"])
+def test_proxy_auth_must_be_user_password(tmp_path: Path, auth: str) -> None:
+    with pytest.raises(ConfigError, match=r"proxy\.auth"):
+        load_config(tmp_path / "x.yaml", environ={"MITM_PROXY_PROXY_AUTH": auth})
+
+
+def test_proxy_auth_from_file(tmp_path: Path) -> None:
+    secret = tmp_path / "auth"
+    secret.write_text("user:pass\n", encoding="utf-8")
+    cfg = load_config(tmp_path / "x.yaml", environ={"MITM_PROXY_PROXY_AUTH_FILE": str(secret)})
+    assert cfg.proxy_auth == "user:pass"
+    assert "pass" not in repr(cfg)
+
+
+def test_ca_cert_and_key_go_together(tmp_path: Path) -> None:
+    with pytest.raises(ConfigError, match="both"):
+        load_config(tmp_path / "x.yaml", environ={"MITM_PROXY_CA_CERT": "pem"})
+
+
+@pytest.mark.parametrize(
+    ("env", "message"),
+    [
+        ({"MITM_PROXY_PROXY_PORT": "0"}, "not a TCP port"),
+        ({"MITM_PROXY_LISTEN_PORT": "70000"}, "not a TCP port"),
+        ({"MITM_PROXY_BODY_MAX_BUFFER_BYTES": "0"}, "greater than 0"),
+        ({"MITM_PROXY_PROXY_PEEK_TIMEOUT_MS": "soon"}, "expected int"),
+    ],
+)
+def test_numeric_validation(tmp_path: Path, env: dict[str, str], message: str) -> None:
+    with pytest.raises(ConfigError, match=message):
+        load_config(tmp_path / "x.yaml", environ=env)
+
+
+def test_yaml_bool_is_not_an_int(write_config: Callable[..., Path]) -> None:
+    with pytest.raises(ConfigError, match="expected int"):
+        load_config(write_config("proxy:\n  port: true\n"), environ={})
+
+
+def test_example_config_is_the_defaults() -> None:
+    example = Path(__file__).parents[2] / "contrib" / "mitm-proxy.example.yaml"
+    cfg = load_config(example, environ={})
+    defaults = load_config(example.with_name("missing.yaml"), environ={})
+    assert cfg.values == defaults.values
+
+
+def test_server_timing_is_off_by_default_and_set_from_file_or_env(
+    write_config: Callable[..., Path],
+) -> None:
+    path = write_config("proxy:\n  server_timing: true\n")
+    assert load_config(path.parent / "missing.yaml", environ={}).server_timing is False
+    assert load_config(path, environ={}).server_timing is True
+    env = {"MITM_PROXY_PROXY_SERVER_TIMING": "false"}
+    assert load_config(path, environ=env).server_timing is False
+
+
+def test_access_log_settings(write_config: Callable[..., Path]) -> None:
+    path = write_config("proxy:\n  access_log: true\n")
+    cfg = load_config(path, environ={"MITM_PROXY_PROXY_ACCESS_LOG_RELAYED": "true"})
+    assert (cfg.access_log, cfg.access_log_relayed) == (True, True)

@@ -43,8 +43,13 @@ LABEL org.opencontainers.image.title="mitm-proxy" \
       org.opencontainers.image.created="${CREATED}"
 
 COPY --from=builder /opt/venv /opt/venv
+# Both listeners default to 127.0.0.1 (design 0001), which a published port can't
+# reach: inside the container bind all interfaces, and let the published ports
+# decide exposure. A config file or -e still overrides these.
 ENV PATH="/opt/venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    MITM_PROXY_LISTEN_HOST=0.0.0.0 \
+    MITM_PROXY_PROXY_HOST=0.0.0.0
 
 RUN useradd --system --create-home --shell /usr/sbin/nologin --uid 1000 mitm-proxy
 

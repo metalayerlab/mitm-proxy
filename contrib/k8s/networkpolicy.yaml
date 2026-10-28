@@ -1,5 +1,6 @@
-# Default: only the ingress controller (the traefik namespace) may reach it.
-# Add a podSelector/namespaceSelector here for each in-cluster client.
+# Default: only the ingress controller (the traefik namespace) may reach the
+# admin API, and nothing may reach the proxy port (fail closed). Add a rule for
+# each client that should use the proxy, like the commented one below.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -16,3 +17,9 @@ spec:
               kubernetes.io/metadata.name: traefik
       ports:
         - {port: 8080, protocol: TCP}
+    # - from:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: lab-clients
+    #   ports:
+    #     - {port: 3128, protocol: TCP}

@@ -12,7 +12,7 @@
 
 ### 📖 Core Concepts
 
-<!-- Project pages go here, e.g. - [How Matching Works](How-Matching-Works) -->
+- [Writing Middleware](Writing-Middleware)
 - [HTTP API Reference](HTTP-API-Reference)
 - [CLI Reference](CLI-Reference)
 
@@ -41,7 +41,11 @@
 
 ### 🔑 Key Features
 
-<!-- guidance: three to five one-line features, each starting with an emoji. -->
+- 🔍 Intercept only the hosts you list; tunnel the rest untouched
+- 🔀 HTTP/1.1 and HTTP/2 on both sides, bridged
+- 🧩 Python middleware: inspect, rewrite, answer or deny
+- 🔐 Its own root CA; origins always verified
+- 📈 Prometheus metrics and a read-only status API
 
 ---
 

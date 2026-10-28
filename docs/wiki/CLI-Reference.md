@@ -7,6 +7,10 @@
 Generated from the code: don't edit, run `uv run scripts/gen-wiki.py`.
 
 <!-- generated:start cli -->
+### `mitm-proxy ca`
+
+The root CA that signs intercepted hosts' certificates.
+
 ### `mitm-proxy config`
 
 Print the effective configuration and where each value came from. Secrets are masked.
@@ -15,9 +19,15 @@ Print the effective configuration and where each value came from. Secrets are ma
 |---|---|---|
 | `--config`, `-c` | `MITM_PROXY_CONFIG` | Config file (default /etc/mitm-proxy/config.yaml; missing is fine). |
 
+### `mitm-proxy scope`
+
+The intercept allowlist.
+
 ### `mitm-proxy serve`
 
-Run the HTTP server.
+Run the proxy and the admin HTTP API until SIGTERM or Ctrl-C.
+
+Loads the root CA (generating it on first start) and imports the middleware chain.
 
 | Option | Environment variable | Description |
 |---|---|---|
@@ -36,4 +46,26 @@ Print the version.
 | 1 | Failure while running |
 | 2 | Bad usage or invalid configuration |
 
-<!-- guidance: add project-specific exit codes, and worked examples of common invocations. -->
+`mitm-proxy scope check` also uses 1: the host would be tunnelled, not intercepted.
+
+### Subcommands
+
+The generated list above stops at the `ca` and `scope` groups; their commands are:
+
+| Command | What it does |
+|---|---|
+| `mitm-proxy ca init [-c FILE] [--force]` | Create the root CA in `<state_dir>/ca/` and print its SHA-256 fingerprint. Refuses to replace an existing one without `--force` (clients must then trust the new one). Refuses when `ca.cert`/`ca.key` are set. |
+| `mitm-proxy ca show [-c FILE] [--der]` | Write the root certificate to stdout (PEM, or DER with `--der`) and its fingerprint to stderr. Exit 2 if there's no CA yet. |
+| `mitm-proxy scope check HOST [-c FILE]` | Say whether HOST would be intercepted, and which `intercept.hosts` entry matched. Exit 0: intercepted, 1: tunnelled untouched, 2: not a valid host. |
+
+### Examples
+
+```sh
+mitm-proxy ca init                          # before first start, to install the CA ahead of time
+mitm-proxy ca show > mitm-ca.pem            # the certificate for clients
+mitm-proxy ca show --der > mitm-ca.cer      # for phones and Windows
+mitm-proxy scope check www.example.org      # www.example.org: intercepted (matches *.example.org)
+MITM_PROXY_LOG_LEVEL=DEBUG mitm-proxy serve -c ./config.yaml
+```
+
+`serve` exits 2 with one line on stderr when it can't start: an invalid setting, an unreadable CA, a port in use, or middleware that won't load.
