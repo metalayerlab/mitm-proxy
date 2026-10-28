@@ -2,7 +2,7 @@
 
 <!-- Add a line for this record to the index in docs/design/README.md (CI checks). -->
 
-Status: Proposed
+Status: Approved
 Date: 2026-10-28
 Authors: Stephen Cox; drafted by Claude (Claude Code)
 
@@ -123,8 +123,8 @@ That's 128 series, plus 18 per middleware.
 
 ## Open questions
 
-1. **Four histograms (proposed), or one with a `stage` label?**
-2. **The `outcome` label on the flow duration**, as proposed, or none, so everything is in one
-   distribution?
-3. **Buckets** as proposed, or a different range (for example, stopping at 10 s, as Prometheus's
-   default does)?
+Resolved at approval (2026-10-28), as recommended:
+
+1. **Four histograms.**
+2. **`outcome`** labels the flow duration.
+3. **Buckets** as proposed, up to 60 s.
