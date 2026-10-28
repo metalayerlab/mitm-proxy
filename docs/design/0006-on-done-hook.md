@@ -2,7 +2,7 @@
 
 <!-- Add a line for this record to the index in docs/design/README.md (CI checks). -->
 
-Status: Proposed
+Status: Approved
 Date: 2026-10-28
 Authors: Stephen Cox; drafted by Claude (Claude Code)
 
@@ -99,7 +99,8 @@ middleware drains itself.
 
 ## Open questions
 
-1. **`Outcome` as a small dataclass** (`kind`, `by`, `status`), or a plain string as in the access log?
-2. **On cancellation**, should `on_done` be bounded by the full hook timeout (proposed), or by a shorter
-   fixed limit (say 1 s) so that shutdown isn't extended much?
-3. **Order:** registration order, as for every other hook (proposed), or reverse order, like unwinding?
+Resolved at approval (2026-10-28):
+
+1. **`Outcome`** is a small frozen dataclass (`kind`, `by`, `status`).
+2. **On cancellation**, `on_done` is bounded by the full hook timeout, like every hook.
+3. **Order:** registration order.

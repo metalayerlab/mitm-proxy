@@ -2,7 +2,7 @@
 
 <!-- Add a line for this record to the index in docs/design/README.md (CI checks). -->
 
-Status: Proposed
+Status: Approved
 Date: 2026-10-28
 Authors: Stephen Cox; drafted by Claude (Claude Code)
 
@@ -146,10 +146,8 @@ logging.
 
 ## Open questions
 
-1. **`req`/`resp` meaning.** Bytes read from the client and written to the client, as proposed. The
-   alternative is the body sizes that went upstream and came back from the origin. Both are useful;
-   the client's side matches what a user sees.
-2. **Logger names.** `mitm_proxy.flows` (kept, since people already filter on it) and
-   `mitm_proxy.relayed`?
-3. **Remove `log` outright**, as proposed, or keep it for one release as an alias that turns on
-   `proxy.access_log` with a deprecation warning?
+Resolved at approval (2026-10-28):
+
+1. **`req`/`resp`:** body bytes read from and written to the client.
+2. **Logger names:** `mitm_proxy.flows` and `mitm_proxy.relayed`.
+3. **`log`** is removed outright.
