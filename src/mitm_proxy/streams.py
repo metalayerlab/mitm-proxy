@@ -12,9 +12,13 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+from collections.abc import Awaitable
 from typing import Protocol
 
 READ_SIZE = 65536
+# Writes go out in pieces of this size, each with its own write timeout: the timeout
+# is for a peer that makes no progress, not for one large write (a buffered body).
+WRITE_PIECE = 65536
 
 
 class ByteStream(Protocol):
@@ -58,11 +62,23 @@ class PlainStream:
         return await self.reader.read(n)
 
     async def write(self, data: bytes) -> None:
-        self.writer.write(data)
+        view = memoryview(data)
+        for start in range(0, len(view), WRITE_PIECE):
+            self.writer.write(view[start : start + WRITE_PIECE])
+            await self._bounded(self.writer.drain())
+
+    async def _bounded(self, waiting: Awaitable[None]) -> None:
+        """Await waiting under the write timeout; on expiry, drop the connection."""
+        if self.write_timeout is None:
+            await waiting
+            return
+        timer = asyncio.timeout(self.write_timeout)
         try:
-            async with asyncio.timeout(self.write_timeout):
-                await self.writer.drain()
+            async with timer:
+                await waiting
         except TimeoutError:
+            if not timer.expired():
+                raise  # the OS's own ETIMEDOUT, not ours: pass it on as it is
             # Half-written data leaves the stream unusable: drop the connection.
             self.writer.transport.abort()
             raise ConnectionResetError(
@@ -75,9 +91,14 @@ class PlainStream:
                 self.writer.write_eof()
 
     async def close(self) -> None:
+        """Close, after sending what's queued, but never wait longer than the write timeout."""
         self.writer.close()
-        with contextlib.suppress(OSError, ConnectionError, asyncio.CancelledError):
-            await self.writer.wait_closed()
+        try:
+            with contextlib.suppress(OSError, ConnectionError):
+                await self._bounded(self.writer.wait_closed())
+        except asyncio.CancelledError:
+            self.writer.transport.abort()  # shutting down: don't leave the socket behind
+            raise
 
     def is_closing(self) -> bool:
         return self.writer.is_closing() or self.reader.at_eof()

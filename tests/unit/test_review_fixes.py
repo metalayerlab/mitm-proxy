@@ -434,3 +434,85 @@ def test_both_ends_get_the_write_timeout(tmp_path: Path) -> None:
     assert isinstance(proxy.connector, TCPConnector)
     assert proxy.connector.write_timeout == 7.0  # origins
     assert proxy.client_write_timeout == 7.0  # clients
+
+
+# Fourth review: the write bound itself.
+
+
+async def test_closing_with_unsent_data_to_a_peer_that_never_reads_is_bounded() -> None:
+    """F1: close() waits for queued data to go out; a peer that never reads must not hang it."""
+    stream, peer_writer, _ = await _socket_pair()
+    stream.writer.write(b"q" * 400_000)  # more than the peer's reader buffers by itself
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    await asyncio.wait_for(stream.close(), 5)
+    assert loop.time() - started < 2
+    peer_writer.close()
+
+
+async def test_close_does_not_swallow_cancellation() -> None:
+    """F1: a cancelled close (shutdown) must stay cancelled, and leave the socket closed."""
+    stream, peer_writer, _ = await _socket_pair()
+    stream.write_timeout = 30  # longer than the test: only the cancellation can end it
+    stream.writer.write(b"q" * 400_000)
+    closing = asyncio.create_task(stream.close())
+    await asyncio.sleep(0.05)
+    closing.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await closing
+    assert stream.writer.transport.is_closing()
+    peer_writer.close()
+
+
+async def test_one_large_write_to_a_steady_reader_is_not_cut_off() -> None:
+    """F2: the timeout is for no progress, not for the whole of a large write."""
+    stream, peer_writer, peer = await _socket_pair()
+    size = 400_000  # takes several timeout periods at the reader's pace
+
+    async def read_steadily() -> int:
+        received = 0
+        while received < size:
+            chunk = await peer.read(4096)  # about 400 KB/s: steady, but slow
+            if not chunk:
+                break
+            received += len(chunk)
+            await asyncio.sleep(0.01)
+        return received
+
+    reader = asyncio.create_task(read_steadily())
+    started = asyncio.get_running_loop().time()
+    await stream.write(b"L" * size)  # one write, as a buffered body is
+    assert asyncio.get_running_loop().time() - started > IDLE  # it did take a while
+    assert await asyncio.wait_for(reader, 10) == size
+    await stream.close()
+    peer_writer.close()
+
+
+@pytest.mark.parametrize("write_timeout", [None, IDLE])
+async def test_a_real_socket_timeout_is_not_mistaken_for_ours(write_timeout: float | None) -> None:
+    """F3: the OS's ETIMEDOUT (an OSError) passes through as itself."""
+    import errno
+
+    stream, peer_writer, _ = await _socket_pair()
+    stream.write_timeout = write_timeout
+
+    async def dead_connection() -> None:
+        raise TimeoutError(errno.ETIMEDOUT, "Connection timed out")
+
+    stream.writer.drain = dead_connection  # type: ignore[method-assign]  # the failure under test
+    with pytest.raises(TimeoutError) as raised:
+        await stream.write(b"x")
+    assert raised.value.errno == errno.ETIMEDOUT
+    peer_writer.close()
+
+
+def test_the_origin_write_timeout_follows_a_config_change(tmp_path: Path) -> None:
+    """F4: like the client side, the origin side uses the current proxy.idle_timeout_ms."""
+    from mitm_proxy.server import ProxyServer
+    from mitm_proxy.upstream.pool import TCPConnector
+    from tests.unit.test_server import make_config
+
+    proxy = ProxyServer(make_config(tmp_path, MITM_PROXY_PROXY_IDLE_TIMEOUT_MS="7000"))
+    proxy.apply(make_config(tmp_path, MITM_PROXY_PROXY_IDLE_TIMEOUT_MS="9000"))
+    assert isinstance(proxy.connector, TCPConnector)
+    assert (proxy.connector.write_timeout, proxy.client_write_timeout) == (9.0, 9.0)

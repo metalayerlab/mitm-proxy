@@ -142,6 +142,9 @@ class ProxyServer:
     def apply(self, config: Config) -> None:
         """Swap in a new configuration; connections already open keep the old one."""
         self.snapshot = self._build(config, None)
+        if isinstance(self.connector, TCPConnector):
+            # Origin connections opened from now on, like client connections, use the new value.
+            self.connector.write_timeout = config.idle_timeout_ms / 1000
         self.metrics.config_applies.inc("applied")
 
     # The listener
@@ -194,9 +197,12 @@ class ProxyServer:
             log.exception("client connection failed")
         finally:
             self.metrics.client_connections.add(-1)
-            if task is not None:
-                self._connections.discard(task)
-            await stream.close()
+            try:
+                await stream.close()
+            finally:
+                # Only now: stop() must still be able to cancel a connection that's closing.
+                if task is not None:
+                    self._connections.discard(task)
 
     def _plain_context(self, client_addr: tuple[str, int]) -> ExchangeContext:
         snap = self.snapshot
