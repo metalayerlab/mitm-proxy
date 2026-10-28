@@ -73,10 +73,11 @@ src/mitm_proxy/
 class InterceptedConnection:
     reader: asyncio.StreamReader
     writer: asyncio.StreamWriter
-    target_host: str          # hostname or IP literal, normalized (see scope.py)
+    target_host: str  # hostname or IP literal, normalized (see scope.py)
     target_port: int
-    prefix: bytes             # client bytes already read past the proxy preamble, replayed first
+    prefix: bytes  # client bytes already read past the proxy preamble, replayed first
     client_addr: tuple[str, int]
+
 
 class InterceptionSource(Protocol):
     def connections(self) -> AsyncIterator[InterceptedConnection]: ...

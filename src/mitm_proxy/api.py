@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from fastapi import FastAPI
 
-from mitm_proxy import __version__
+from mitm_proxy import DESCRIPTION, __version__
 from mitm_proxy.config import Config
 
 
@@ -17,7 +17,7 @@ def create_app(config: Config) -> FastAPI:
     app = FastAPI(
         title="mitm-proxy",
         version=__version__,
-        description="Async Python MITM proxy with a self-signed CA — HTTP/1.1 & HTTP/2, pluggable middleware for inspecting and rewriting traffic in flight.",
+        description=DESCRIPTION,
     )
     app.state.config = config
 

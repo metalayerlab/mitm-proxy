@@ -11,11 +11,11 @@ from typing import Annotated
 
 import typer
 
-from mitm_proxy import __version__
+from mitm_proxy import DESCRIPTION, __version__
 from mitm_proxy.config import CONFIG_ENV, SETTINGS, Config, ConfigError, load_config
 
 app = typer.Typer(
-    help="Async Python MITM proxy with a self-signed CA — HTTP/1.1 & HTTP/2, pluggable middleware for inspecting and rewriting traffic in flight.",
+    help=DESCRIPTION,
     no_args_is_help=True,
     add_completion=False,
     pretty_exceptions_enable=False,
