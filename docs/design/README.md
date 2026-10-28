@@ -10,4 +10,4 @@ Approved (by a human) → Implemented; supersede an implemented record with a ne
 |---|---|---|---|
 | [0001](0001-initial-design.md) | Initial design | Approved | Explicit CONNECT proxy behind an InterceptionSource seam; h1+h2 via h11/h2; allowlist-only interception; protocol-agnostic Flow with chunk-capable middleware hooks; pooled, always-verified upstream TLS |
 | [0002](0002-control-plane-management.md) | Control-plane management | Proposed | Instances pull config from a central control plane over one long-polled HTTPS exchange (OpAMP concepts, JSON); bootstrap vs managed settings; mTLS enrollment, fleet intermediate CA; local API read-only: healthz, readyz, /v1/status, /metrics, /ca.* |
-| [0003](0003-flow-timings.md) | Flow timings | Proposed | Read-only `flow.timings` (monotonic stage times, per-middleware time) filled by the exchange; FlowLogger appends total/connect/ttfb/mw |
+| [0003](0003-flow-timings.md) | Flow timings | Approved | Read-only `flow.timings` (monotonic stage times, per-middleware time) filled by the exchange; FlowLogger appends total/connect/ttfb/mw |
