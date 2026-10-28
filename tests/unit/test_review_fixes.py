@@ -6,9 +6,11 @@ import pytest
 
 from mitm_proxy.errors import UpstreamConnectError
 from mitm_proxy.exchange import handle
-from mitm_proxy.http.flow import Request, Response
+from mitm_proxy.http.flow import Flow, Request, Response
+from mitm_proxy.http.h2 import H2Upstream
 from mitm_proxy.http.headers import Headers
 from mitm_proxy.http.messages import IncomingRequest
+from mitm_proxy.pipeline import Middleware
 from tests.harness import Origin, bench, client_for, send
 from tests.unit.test_access_log import _no_body
 
@@ -209,4 +211,81 @@ async def test_an_error_goaway_still_ends_the_connection_at_once() -> None:
     await stream.write(_goaway(2))  # INTERNAL_ERROR
     with pytest.raises(UpstreamError):
         await asyncio.wait_for(download, 5)
+    await b.close()
+
+
+IDLE = 0.2  # the proxy's idle timeout in these tests
+
+
+class _Ended(Middleware):
+    """Applies to every flow (so its request body is buffered) and records how each ended."""
+
+    def __init__(self) -> None:
+        self.outcomes: list[str] = []
+
+    async def on_done(self, flow: Flow) -> None:
+        self.outcomes.append(str(flow.outcome))
+
+
+async def _keepalive(client: H2Upstream) -> None:
+    """Connection-level traffic (PINGs), so only the stalled stream is idle."""
+    while True:
+        client.conn.ping(b"keepaliv")
+        await client.flush()
+        await asyncio.sleep(IDLE / 4)
+
+
+async def test_a_silent_http2_connection_is_closed_even_with_a_stream_open() -> None:
+    """Finding 6: proxy.idle_timeout_ms applies while streams are open, too."""
+    b = bench()
+    client = await client_for(b.proxy(b.context("h2", [("ended", _Ended())]), idle=IDLE), "h2")
+    assert isinstance(client, H2Upstream)
+    sid = client.conn.get_next_available_stream_id()
+    head = [(b":method", b"POST"), (b":scheme", b"https"), (b":authority", b"example.org")]
+    client.conn.send_headers(sid, [*head, (b":path", b"/")], end_stream=False)
+    await client.flush()  # a request body is promised, and then nothing at all
+    await asyncio.wait_for(b.tasks[-1], 2)  # the proxy gives up on the connection
+    await b.close()
+
+
+async def test_a_stalled_http2_request_body_ends_its_stream() -> None:
+    """Finding 6: a request body that stops arriving ends its stream, not the connection."""
+    ended = _Ended()
+    b = bench()
+    client = await client_for(b.proxy(b.context("h2", [("ended", ended)]), idle=IDLE), "h2")
+    assert isinstance(client, H2Upstream)
+    keepalive = asyncio.create_task(_keepalive(client))
+    sid = client.conn.get_next_available_stream_id()
+    head = [(b":method", b"POST"), (b":scheme", b"https"), (b":authority", b"example.org")]
+    client.conn.send_headers(sid, [*head, (b":path", b"/")], end_stream=False)
+    client.conn.send_data(sid, b"the start of a body that never finishes")
+    await client.flush()
+    for _ in range(100):
+        if ended.outcomes:
+            break
+        await asyncio.sleep(IDLE / 4)
+    assert ended.outcomes == ["aborted"]
+    assert (await send(client)).status == 200  # the connection itself is still fine
+    keepalive.cancel()
+    await b.close()
+
+
+async def test_a_client_that_never_reads_ends_its_stream() -> None:
+    """Finding 6: waiting for a client's flow-control window is bounded too."""
+    ended = _Ended()
+    b = bench(Origin(body=b"w" * (2 * 1024 * 1024)))  # more than the client's window
+    client = await client_for(b.proxy(b.context("h2", [("ended", ended)]), idle=IDLE), "h2")
+    assert isinstance(client, H2Upstream)
+    keepalive = asyncio.create_task(_keepalive(client))
+    request = Request("GET", "https", "example.org", "/never-read")
+    response = await client.request(  # the body is never read: no window goes back
+        request, Headers(), has_body=False, body=_no_body(), trailers=lambda: None
+    )
+    assert response.response.status == 200
+    for _ in range(100):
+        if ended.outcomes:
+            break
+        await asyncio.sleep(IDLE / 4)
+    assert ended.outcomes == ["aborted"]
+    keepalive.cancel()
     await b.close()

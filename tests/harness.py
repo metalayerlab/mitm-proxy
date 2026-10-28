@@ -148,7 +148,9 @@ class Bench:
             access_log_relayed=access_log_relayed,
         )
 
-    def proxy(self, ctx: ExchangeContext, proxy_mode: ProxyMode | None = None) -> MemoryStream:
+    def proxy(
+        self, ctx: ExchangeContext, proxy_mode: ProxyMode | None = None, *, idle: float = 5
+    ) -> MemoryStream:
         """Start the proxy's client-facing server; return the client's end."""
         client_end, proxy_end = memory_pair()
 
@@ -157,12 +159,12 @@ class Bench:
 
         server: H1Server | H2Server
         if ctx.protocol == "h2":
-            server = H2Server(proxy_end, handler, idle_timeout=5)
+            server = H2Server(proxy_end, handler, idle_timeout=idle)
         else:
             server = H1Server(
                 proxy_end,
                 handler,
-                idle_timeout=5,
+                idle_timeout=idle,
                 default_authority="example.org",
                 proxy=proxy_mode,
             )

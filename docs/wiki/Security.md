@@ -33,7 +33,7 @@ mitm-proxy decrypts traffic on purpose, so the question is who else can use that
 
 - clients that choose to trust the root;
 - what your middleware does with the plaintext;
-- denial of service (there's no rate limiting).
+- denial of service (there's no rate limiting). Stalled clients are bounded, though: a connection or HTTP/2 stream that stops sending or reading is closed after `proxy.idle_timeout_ms`, so it can't hold resources forever.
 
 ## Secrets
 
