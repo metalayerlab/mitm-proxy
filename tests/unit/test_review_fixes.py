@@ -1,6 +1,7 @@
 """Regression tests for the code-review findings on the initial implementation."""
 
 import asyncio
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -288,4 +289,84 @@ async def test_a_client_that_never_reads_ends_its_stream() -> None:
         await asyncio.sleep(IDLE / 4)
     assert ended.outcomes == ["aborted"]
     keepalive.cancel()
+    await b.close()
+
+
+# Second review of the fixes above.
+
+
+async def test_a_trickling_response_survives_a_graceful_goaway() -> None:
+    """R1: after a GOAWAY the client may go quiet while a response is still flowing."""
+    b = bench(Origin(body=b"t" * 1000, trickle=IDLE / 4))  # ~2.5 idle periods, no acks due
+    stream = b.proxy(b.context("h2"), idle=IDLE)
+    client = await client_for(stream, "h2")
+    download = asyncio.create_task(send(client, path="/slow"))
+    await asyncio.sleep(0.02)
+    await stream.write(_goaway(0))
+    reply = await asyncio.wait_for(download, 5)
+    assert (reply.status, len(reply.body)) == (200, 1000)
+    await b.close()
+
+
+async def test_a_slow_origin_gets_its_time_on_an_idle_http2_connection() -> None:
+    """R2: the connection's idle close must not pre-empt an open stream's own timeouts."""
+    b = bench(Origin(delay=IDLE * 2))  # the origin thinks; nothing moves either way
+    client = await client_for(b.proxy(b.context("h2"), idle=IDLE), "h2")
+    reply = await asyncio.wait_for(send(client), 5)
+    assert reply.status == 200
+    await b.close()
+
+
+async def test_a_stalled_upload_is_the_clients_fault_not_the_origins(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """R3: a client that stops uploading ends the flow as aborted, not as an origin error."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="mitm_proxy.flows")
+
+    async def stalls() -> AsyncIterator[bytes]:
+        yield b"the start of an upload"
+        await asyncio.Event().wait()
+
+    b = bench(Origin(echo=True))
+    client = await client_for(b.proxy(b.context("h2", access_log=True), idle=IDLE), "h2")
+    request = Request("POST", "https", "example.org", "/upload")
+    upload = asyncio.create_task(
+        client.request(request, Headers(), has_body=True, body=stalls(), trailers=lambda: None)
+    )
+    for _ in range(100):
+        lines = [r.getMessage() for r in caplog.records if r.name == "mitm_proxy.flows"]
+        if lines:
+            break
+        await asyncio.sleep(IDLE / 4)
+    assert lines and lines[0].endswith(" outcome=aborted"), lines
+    messages = [r.getMessage() for r in caplog.records]
+    blamed = [m for m in messages if "connection to the origin" in m]
+    assert blamed == []  # not logged (or counted) as an origin failure
+    upload.cancel()
+    await asyncio.gather(upload, return_exceptions=True)
+    await b.close()
+
+
+async def test_cancelling_a_draining_connection_leaves_no_tasks_behind() -> None:
+    """R4: the GOAWAY drain's helper tasks are cleaned up when the connection is cancelled."""
+    b = bench(Origin(delay=5))  # a stream stays open: the connection is draining
+    stream = b.proxy(b.context("h2"))
+    client = await client_for(stream, "h2")
+    pending = asyncio.create_task(send(client))
+    await asyncio.sleep(0.02)
+    await stream.write(_goaway(0))
+    await asyncio.sleep(0.05)
+    connection = b.tasks[-1]
+    connection.cancel()
+    await asyncio.gather(connection, return_exceptions=True)
+    await asyncio.sleep(0)
+    helpers = ("Event.wait", "MemoryStream.read")  # what the drain waits on
+    leftovers = [
+        t for t in asyncio.all_tasks() if not t.done() and any(h in repr(t) for h in helpers)
+    ]
+    assert leftovers == []
+    pending.cancel()
+    await asyncio.gather(pending, return_exceptions=True)
     await b.close()

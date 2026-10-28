@@ -54,6 +54,7 @@ class Origin:
     websocket: bool = False  # answer upgrades with 101 and echo raw bytes
     delay: float = 0.0  # seconds to "think" before the response headers
     connect_delay: float = 0.0  # seconds before connecting (or failing to)
+    trickle: float = 0.0  # if set, send the body in 10 parts, this many seconds apart
     tasks: list[asyncio.Task[None]] = field(default_factory=list)
 
     async def handler(self, incoming: IncomingRequest, responder: Responder) -> None:
@@ -87,9 +88,15 @@ class Origin:
         no_body = request.method == "HEAD" or self.status in (204, 304)
         await responder.start(Response(self.status, headers), headers, end=no_body)
         if not no_body:
-            half = len(body) // 2
-            await responder.data(body[:half])
-            await responder.data(body[half:])
+            if self.trickle:
+                step = max(1, len(body) // 10)
+                for i in range(0, len(body), step):
+                    await responder.data(body[i : i + step])
+                    await asyncio.sleep(self.trickle)
+            else:
+                half = len(body) // 2
+                await responder.data(body[:half])
+                await responder.data(body[half:])
             await responder.end(self.trailers)
 
     async def serve(self, stream: MemoryStream) -> None:

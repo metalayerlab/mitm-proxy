@@ -15,6 +15,14 @@ class ProtocolError(Exception):
     """A client sent a malformed request or frame."""
 
 
+class ClientTimeout(Exception):
+    """A client stopped sending in the middle of a request (its body stalled).
+
+    Not an OSError on purpose: the upstream layers turn those into UpstreamError, and
+    this is the client's doing, not the origin's.
+    """
+
+
 class UpstreamError(Exception):
     """An origin server couldn't be used for a flow."""
 

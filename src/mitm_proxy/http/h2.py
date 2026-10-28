@@ -25,7 +25,7 @@ import h2.events
 import h2.exceptions
 import h2.settings
 
-from mitm_proxy.errors import ProtocolError, UpstreamConnectError, UpstreamTimeout
+from mitm_proxy.errors import ClientTimeout, ProtocolError, UpstreamConnectError, UpstreamTimeout
 from mitm_proxy.http.flow import Request, Response
 from mitm_proxy.http.framing import declared_length, response_allows_body
 from mitm_proxy.http.headers import Headers
@@ -100,13 +100,11 @@ class _H2Connection:
         # How long a stream may wait for the peer's flow-control window without progress
         # (None: forever). The server sets proxy.idle_timeout_ms; the upstream its read timeout.
         self.window_timeout: float | None = None
-        self.last_activity = asyncio.get_running_loop().time()  # bytes either way
 
     async def flush(self) -> None:
         data = self.conn.data_to_send()
         if data:
             await self.stream.write(data)
-            self.last_activity = asyncio.get_running_loop().time()
 
     def _initiate(self, settings: dict[int, int]) -> None:
         self.conn.initiate_connection()
@@ -260,15 +258,15 @@ class H2Server(_H2Connection):
                     try:
                         data = await asyncio.wait_for(self.stream.read(), self.idle_timeout)
                     except TimeoutError:
-                        # Idle means no bytes either way: a stream still sending a long
-                        # response keeps the connection open.
-                        idle = asyncio.get_running_loop().time() - self.last_activity
-                        if self._tasks and idle < self.idle_timeout:
+                        # Idle only counts with no stream open. An open stream has its own
+                        # bounds (request body, flow-control window, the origin's read
+                        # timeout, the hook timeout) and ends by itself; closing here first
+                        # would cut off a slow origin's answer, or its 504.
+                        if self._tasks:
                             continue
                         self.conn.close_connection()
                         await self.flush()
                         break
-                self.last_activity = asyncio.get_running_loop().time()
                 if not data:
                     break
                 try:
@@ -304,18 +302,23 @@ class H2Server(_H2Connection):
             self._drained.set()
 
     async def _read_until_drained(self) -> bytes:
-        """The next bytes from the client, or b"" once no stream is left (or on idle)."""
+        """The next bytes from the client, or b"" once no stream is left.
+
+        A quiet client isn't a reason to stop: a response may still be flowing to it, and
+        each open stream ends by its own timeouts (see run).
+        """
         read = asyncio.ensure_future(self.stream.read())
         drained = asyncio.ensure_future(self._drained.wait())
-        done, _ = await asyncio.wait(
-            {read, drained}, timeout=self.idle_timeout, return_when=asyncio.FIRST_COMPLETED
-        )
-        drained.cancel()
-        if read in done:
-            return read.result()
-        read.cancel()  # the connection is ending: nothing more will be read from it
-        await asyncio.gather(read, return_exceptions=True)
-        return b""
+        try:
+            await asyncio.wait({read, drained}, return_when=asyncio.FIRST_COMPLETED)
+            if read.done():
+                return read.result()
+            return b""  # no stream left: the connection is done
+        finally:
+            # Also on cancellation (shutdown): neither helper may outlive this call.
+            for helper in (read, drained):
+                helper.cancel()
+            await asyncio.gather(read, drained, return_exceptions=True)
 
     async def _dispatch(self, event: h2.events.Event) -> None:
         if isinstance(event, h2.events.RequestReceived) and event.stream_id is not None:
@@ -373,7 +376,7 @@ class H2Server(_H2Connection):
                     sid,
                     state,
                     self.idle_timeout,
-                    lambda: ConnectionResetError("the client stopped sending the request body"),
+                    lambda: ClientTimeout("the client stopped sending the request body"),
                 ),
                 has_body=has_body,
                 declared_length=declared_length(regular),
@@ -384,6 +387,9 @@ class H2Server(_H2Connection):
             await self.handler(incoming, responder)
         except asyncio.CancelledError:
             raise
+        except ClientTimeout as e:
+            log.info("HTTP/2 stream %d: %s", sid, e)
+            self.reset(sid, h2.errors.ErrorCodes.CANCEL)
         except (OSError, ConnectionError, ProtocolError):
             self.reset(sid, h2.errors.ErrorCodes.CANCEL)
         except Exception:
