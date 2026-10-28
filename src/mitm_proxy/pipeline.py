@@ -60,6 +60,10 @@ class Middleware:
         """None passes the chunk on unchanged; bytes replace it."""
         return None
 
+    async def on_done(self, flow: Flow) -> None:
+        """Called once, after the flow has ended, however it ended (flow.outcome). Observe only."""
+        return None
+
 
 def is_mutation_capable(middleware: Middleware) -> bool:
     cls = type(middleware)
@@ -230,6 +234,14 @@ class FlowPipeline:
         if self.response_skipped:
             return chunk
         return await self._run_chunk("on_response_chunk", chunk, is_last)
+
+    async def run_done(self) -> None:
+        """on_done for every middleware that applied and hasn't failed, in order.
+
+        Not skipped for oversize bodies: every middleware that applied is told the flow ended.
+        """
+        for entry in self._active():
+            await self._call(entry, "on_done", self.flow)
 
 
 def load_middleware(

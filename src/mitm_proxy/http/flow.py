@@ -162,11 +162,17 @@ class Flow:
         self.response: Response | None = None
         self.metadata: dict[str, Any] = {}
         self.timings = Timings(started=time.monotonic())
+        self._outcome: Outcome | None = None  # set by the proxy when the flow ends
 
     @property
     def protocol(self) -> str:
         """The client leg's protocol, "http/1.1" or "h2". Read-only."""
         return self._protocol
+
+    @property
+    def outcome(self) -> Outcome | None:
+        """How the flow ended; None until it has. Read-only."""
+        return self._outcome
 
     @property
     def host(self) -> str:

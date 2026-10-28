@@ -46,6 +46,7 @@ The name (`block-ads`) is what appears in logs and metrics. The order of `chain`
 | `on_request_chunk(flow, chunk, is_last)` | For each chunk of a request that has a body | `None` (unchanged) or replacement `bytes` |
 | `on_response(flow)` | After the response body is read | an `Action` |
 | `on_response_chunk(flow, chunk, is_last)` | For each chunk of a response that may have a body | `None` or replacement `bytes` |
+| `on_done(flow)` | Once, after the flow has ended, however it ended | nothing (observe only) |
 
 Every hook except `applies_to` is `async`. In this version bodies are buffered, so a chunk hook is called once per body, with the whole body and `is_last=True`. Write chunk hooks as if chunks could be partial: a streaming release will call them per chunk without changing the signature.
 
@@ -69,6 +70,7 @@ Every hook except `applies_to` is `async`. In this version bodies are buffered, 
 | `flow.server_conn` | Origin host, port, address, and the protocol on that side |
 | `flow.metadata` | A dict for your own state between hooks |
 | `flow.timings` | When each stage happened (read-only; see [Timings](#timings)) |
+| `flow.outcome` | How the flow ended (read-only; `None` until it has; see [When a flow ends](#when-a-flow-ends)) |
 
 Headers are a case-insensitive multimap with lower-case names (`get`, `get_all`, `set`, `add`, `remove`). Connection-level headers (`Connection`, `Transfer-Encoding`, `Keep-Alive`, `Proxy-*`…) are already removed, and `Host` / `:authority` is `request.authority`, so you never deal with protocol differences. Bodies are de-framed but not decompressed: check `content-encoding` before reading text. Read a whole body with `await flow.request.body.read_all()`, or replace it with `flow.response.body = BufferedBodyStream(b"…")`.
 
@@ -104,6 +106,57 @@ class SlowOrigins(Middleware):
             )
         return Action.CONTINUE
 ```
+
+## When a flow ends
+
+`on_done(flow)` is called once for every flow your middleware applied to, after the flow has ended: the last response byte has gone to the client, or a local answer, deny or proxy error has been sent, or the flow was aborted. It runs even for flows other hooks never saw: a response your middleware (or another one) answered with `STOP`, a `DENY`, and bodies too large to buffer. It's the place to record or export flows.
+
+`flow.outcome` says how the flow ended, and `flow.timings.complete` is set:
+
+| `outcome.kind` | `outcome.by` | `outcome.status` |
+|---|---|---|
+| `"origin"` | `None` | The origin's status |
+| `"local"` | The middleware that answered | Its status |
+| `"denied"` | The middleware that denied | `403` (request) or `502` (response) |
+| `"error"` | `None`, or the middleware that stopped without a response | `502` or `504` |
+| `"aborted"` | `None` | The status already sent, or `None` |
+
+`str(flow.outcome)` is the access log's form: `origin`, `local:cache`, `error:502`.
+
+```python
+import json
+import logging
+
+from mitm_proxy.http.flow import Flow
+from mitm_proxy.pipeline import Middleware
+
+audit = logging.getLogger("labtools.audit")
+
+
+class Audit(Middleware):
+    """One JSON record per flow to the example.org API, however it ended."""
+
+    def applies_to(self, flow: Flow) -> bool:
+        return flow.host == "api.example.org"
+
+    async def on_done(self, flow: Flow) -> None:
+        t = flow.timings
+        record = {
+            "flow": flow.id,
+            "method": flow.method,
+            "path": flow.request.path,
+            "outcome": str(flow.outcome),
+            "status": flow.outcome.status if flow.outcome else None,
+            "total_ms": round((t.total or 0) * 1000, 1),
+            "middleware_ms": {k: round(v * 1000, 1) for k, v in t.middleware.items()},
+        }
+        audit.info(json.dumps(record))
+```
+
+- **Observe only.** The response has gone, so changing `flow` has no effect.
+- **Keep it fast.** On HTTP/1.1, the client's next request on the same connection waits until `on_done` returns. Hand slow work (files, network) to a queue that your middleware drains itself.
+- **It always runs, once.** That includes flows the client cancelled (common in browsers) and flows still in flight when the proxy shuts down, bounded by `middleware.hook_timeout_ms`. It's skipped only if your middleware already failed earlier in the same flow.
+- Its time is added to `flow.timings.middleware`, but the access log and `Server-Timing` are written before it runs, so they don't include it.
 
 ## Rules
 

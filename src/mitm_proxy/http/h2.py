@@ -200,9 +200,13 @@ class H2Server(_H2Connection):
         finally:
             self.closed = True
             await self._notify_window()
-            for task in list(self._tasks.values()):
+            streams = list(self._tasks.values())
+            for task in streams:
                 task.cancel()
             await self.stream.close()
+            # Let cancelled streams finish their cleanup: on_done runs there (0006), each
+            # bounded by the hook timeout.
+            await asyncio.gather(*streams, return_exceptions=True)
 
     def _task_done(self, task: asyncio.Task[None]) -> None:
         for sid, known in list(self._tasks.items()):

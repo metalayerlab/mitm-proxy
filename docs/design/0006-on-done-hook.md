@@ -2,7 +2,7 @@
 
 <!-- Add a line for this record to the index in docs/design/README.md (CI checks). -->
 
-Status: Approved
+Status: Implemented
 Date: 2026-10-28
 Authors: Stephen Cox; drafted by Claude (Claude Code)
 

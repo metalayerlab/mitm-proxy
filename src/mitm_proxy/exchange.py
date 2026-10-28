@@ -256,23 +256,32 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
     ctx.metrics.flows.inc(kind if switch is None else FlowType.WEBSOCKET.value)
     tally = _Tally(responder)
     incoming.body = tally.count(incoming.body)
+    run: FlowPipeline | None = None
     try:
         if switch is not None:
             await _websocket(ctx, flow, incoming, switch, tally, target)
         else:
+            if pipeline is not None:
+                run = pipeline.start(flow)
+                run.on_failure = lambda name: ctx.metrics.middleware_failures.inc(name)
             timed = ctx.server_timing and ctx.intercepts(request)
-            await _exchange(ctx, flow, incoming, tally, target, pipeline, timed)
+            await _exchange(ctx, flow, incoming, tally, target, run, timed)
     finally:
         flow.timings.complete = time.monotonic()
-        _access_log(ctx, flow, tally)
+        outcome = flow._outcome = tally.outcome()
+        _access_log(ctx, flow, tally, outcome)
+        # After the log line, so the log never waits on middleware. On cancellation this
+        # still runs (each hook bounded by the hook timeout); the cancellation then resumes.
+        if run is not None and run.applies:
+            await run.run_done()
 
 
-def _access_log(ctx: ExchangeContext, flow: Flow, tally: _Tally) -> None:
+def _access_log(ctx: ExchangeContext, flow: Flow, tally: _Tally, outcome: Outcome) -> None:
     """The flow's access-log line (0005). Synchronous: written even when the flow is cancelled."""
     intercepted = ctx.intercepts(flow.request)
     if not (ctx.access_log if intercepted else ctx.access_log_relayed):
         return
-    request, t, outcome = flow.request, flow.timings, tally.outcome()
+    request, t = flow.request, flow.timings
     received, sent = tally.sizes()
     status = outcome.status if outcome.status is not None else "-"
     url = f"{request.scheme}://{request.authority}{request.path}"
@@ -321,7 +330,7 @@ async def _exchange(
     incoming: IncomingRequest,
     tally: _Tally,
     target: Target,
-    pipeline: Pipeline | None,
+    run: FlowPipeline | None,
     timed: bool,
 ) -> None:
     request = flow.request
@@ -330,9 +339,6 @@ async def _exchange(
     def timing(local: str | None = None) -> str | None:
         return server_timing(flow, local) if timed else None
 
-    run = pipeline.start(flow) if pipeline is not None else None
-    if run is not None:
-        run.on_failure = lambda name: ctx.metrics.middleware_failures.inc(name)
     active: FlowPipeline | None = run if run is not None and run.applies else None
     head_only = request.method == "HEAD"
 
