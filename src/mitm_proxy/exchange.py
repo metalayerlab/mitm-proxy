@@ -71,19 +71,40 @@ class _Body:
         self.finished = True
 
 
-async def _buffer(source: AsyncIterator[bytes], limit: int) -> tuple[bytes, bool]:
-    """Read up to limit bytes; (data, True) if the whole body fit."""
-    data = bytearray()
+@dataclass
+class _Buffered:
+    """Chunks read so far. Kept as chunks so an overflowing body is never copied."""
+
+    chunks: list[bytes]
+    size: int
+    fits: bool  # the whole body is here, within the limit
+
+    def join(self) -> bytes:
+        """The body as one bytes object; the chunks are released."""
+        data = self.chunks[0] if len(self.chunks) == 1 else b"".join(self.chunks)
+        self.chunks.clear()
+        return data
+
+
+async def _buffer(source: AsyncIterator[bytes], limit: int) -> _Buffered:
+    """Read until the body ends or passes limit bytes."""
+    chunks: list[bytes] = []
+    size = 0
     async for chunk in source:
-        data += chunk
-        if len(data) > limit:
-            return bytes(data), False
-    return bytes(data), True
+        chunks.append(chunk)
+        size += len(chunk)
+        if size > limit:
+            return _Buffered(chunks, size, fits=False)
+    return _Buffered(chunks, size, fits=True)
 
 
-async def _chain(first: bytes, rest: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
-    if first:
-        yield first
+async def _chain(first: list[bytes], rest: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """The buffered chunks, each released once sent, then the rest of the body."""
+    for i, chunk in enumerate(first):
+        first[i] = b""
+        if chunk:
+            yield chunk
+    first.clear()
     async for chunk in rest:
         yield chunk
 
@@ -120,13 +141,13 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
 
     # The request body: buffered when middleware applies, otherwise passed through.
     if active is not None and incoming.has_body:
-        data, fits = await _buffer(incoming.body, ctx.max_buffer)
-        if fits:
-            request.body = BufferedBodyStream(data)
+        buffered = await _buffer(incoming.body, ctx.max_buffer)
+        if buffered.fits:
+            request.body = BufferedBodyStream(buffered.join())
             request.trailers = incoming.trailers()
         else:
-            _oversize(ctx, flow, active, "request", len(data))
-            request.body = PassthroughBody(_chain(data, incoming.body))
+            _oversize(ctx, flow, active, "request", buffered.size)
+            request.body = PassthroughBody(_chain(buffered.chunks, incoming.body))
     elif incoming.has_body:
         request.body = PassthroughBody(incoming.body)
     else:
@@ -157,7 +178,7 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
             request.body = BufferedBodyStream(data)
 
     body = request.body
-    buffered = isinstance(body, BufferedBodyStream)
+    body_buffered = isinstance(body, BufferedBodyStream)
     # A middleware may have given a bodiless request a body by assignment.
     has_body = incoming.has_body or (isinstance(body, BufferedBodyStream) and len(body) > 0)
     mutation = active is not None and active.mutation_capable and not active.request_skipped
@@ -169,7 +190,7 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
     )
 
     def request_trailers() -> Headers | None:
-        return request.trailers if buffered else incoming.trailers()
+        return request.trailers if body_buffered else incoming.trailers()
 
     try:
         upstream = await _send_upstream(
@@ -247,13 +268,13 @@ async def _respond(
         declared = upstream.declared_length if upstream is not None else None
 
         if upstream is not None and active is not None and not active.response_skipped:
-            data, fits = await _buffer(source.__aiter__(), ctx.max_buffer)
-            if fits:
-                response.body = BufferedBodyStream(data)
+            buffered = await _buffer(source.__aiter__(), ctx.max_buffer)
+            if buffered.fits:
+                response.body = BufferedBodyStream(buffered.join())
                 response.trailers = upstream.trailers()
             else:
-                _oversize(ctx, flow, active, "response", len(data))
-                response.body = PassthroughBody(_chain(data, source.__aiter__()))
+                _oversize(ctx, flow, active, "response", buffered.size)
+                response.body = PassthroughBody(_chain(buffered.chunks, source.__aiter__()))
             if not active.response_skipped:
                 outcome = await active.run_response()
                 if outcome.action is Action.DENY:

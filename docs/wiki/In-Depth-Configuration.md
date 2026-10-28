@@ -66,6 +66,8 @@ The TLS name the client asks for (SNI) must be on the list too, or the tunnel is
 
 When any middleware applies to a flow, its bodies are read whole before the middleware sees them (one chunk each), up to `body.max_buffer_bytes`. A larger body is **streamed through without middleware**, and logged as a warning and counted in the `mitm_proxy_oversize_passthrough_total` metric. Flows no middleware applies to are never buffered.
 
+Memory: a body being buffered takes up to about twice its size for a moment, while it's assembled into one piece for middleware. A body that overflows the limit costs about the limit once. Budget roughly `2 × body.max_buffer_bytes` for each concurrent flow that middleware buffers.
+
 If a middleware that can rewrite bodies (one with a chunk hook) applies to a flow, the flow's bodies are sent with `Transfer-Encoding: chunked` (HTTP/1.1) or without a `content-length` (HTTP/2), because the final length isn't known in advance. Responses to `HEAD`, and `1xx`, `204` and `304` responses, never get framing headers added.
 
 ### Timeouts

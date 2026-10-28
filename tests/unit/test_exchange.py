@@ -1,6 +1,7 @@
 """End-to-end through the proxy's exchange, in memory, for every protocol pairing."""
 
 import asyncio
+from collections.abc import AsyncIterator
 
 import pytest
 
@@ -331,3 +332,43 @@ async def test_retry_once_when_a_reused_h1_connection_died() -> None:
     assert (await send(client)).status == 200
     assert b.origin.connections == 2
     await b.close()
+
+
+async def test_an_oversize_body_costs_about_one_buffer_of_memory() -> None:
+    """Overflowing body.max_buffer_bytes must not copy the buffered part (it once cost 2x)."""
+    import tracemalloc
+
+    from mitm_proxy.exchange import _buffer, _chain
+
+    limit, chunk, total = 8 * 2**20, 64 * 1024, 32 * 2**20
+
+    async def source() -> AsyncIterator[bytes]:
+        for _ in range(total // chunk):
+            yield b"x" * chunk
+
+    body = source()
+    tracemalloc.start()
+    try:
+        buffered = await _buffer(body, limit)
+        assert not buffered.fits
+        received = 0
+        async for part in _chain(buffered.chunks, body):
+            received += len(part)
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert received == total
+    assert peak < 1.3 * limit, f"peak {peak / 2**20:.1f} MiB for an 8 MiB limit"
+
+
+async def test_a_body_that_fits_is_joined_once() -> None:
+    from mitm_proxy.exchange import _buffer
+
+    async def source() -> AsyncIterator[bytes]:
+        yield b"ab"
+        yield b"cd"
+
+    buffered = await _buffer(source(), 10)
+    assert buffered.fits and buffered.size == 4
+    assert buffered.join() == b"abcd"
+    assert buffered.chunks == []  # released after joining
