@@ -127,6 +127,29 @@ class _H2Connection:
             if data:
                 yield data
 
+    def _release(self, sid: int) -> _Stream | None:
+        """Forget a finished stream, giving back the window of DATA nobody will read.
+
+        Received DATA is acknowledged only when it's consumed, so DATA still queued
+        when a stream ends early (an error before the body was read, a reset, a
+        discarded response) would otherwise be lost from the connection window for
+        good, and every other stream on the connection would stall.
+        """
+        state = self.streams.pop(sid, None)
+        if state is None:
+            return None
+        state.done = True  # DATA arriving from now on is acknowledged in _on_data
+        unread = 0
+        while not state.queue.empty():
+            item = state.queue.get_nowait()
+            if isinstance(item, tuple):
+                unread += item[1]
+        if unread:
+            # A closed stream still updates the connection window (h2 handles it).
+            with contextlib.suppress(h2.exceptions.ProtocolError):
+                self.conn.acknowledge_received_data(unread, sid)
+        return state
+
     def _on_data(self, event: h2.events.DataReceived) -> None:
         sid = event.stream_id
         state = self.streams.get(sid) if sid is not None else None
@@ -230,7 +253,7 @@ class H2Server(_H2Connection):
         elif isinstance(event, h2.events.StreamEnded) and event.stream_id in self.streams:
             self.streams[event.stream_id].queue.put_nowait(None)
         elif isinstance(event, h2.events.StreamReset) and event.stream_id is not None:
-            reset = self.streams.pop(event.stream_id, None)
+            reset = self._release(event.stream_id)
             if reset is not None:
                 reset.queue.put_nowait(ConnectionResetError("the client reset the stream"))
             serving = self._tasks.get(event.stream_id)
@@ -281,7 +304,7 @@ class H2Server(_H2Connection):
             self.reset(sid, h2.errors.ErrorCodes.INTERNAL_ERROR)
         finally:
             state.done = True
-            self.streams.pop(sid, None)
+            self._release(sid)
             with contextlib.suppress(OSError, ConnectionError):
                 await self.flush()
 
@@ -401,14 +424,13 @@ class H2Upstream(_H2Connection):
             await self._drop(sid, cancel=not state.done)
 
     async def _drop(self, sid: int, *, cancel: bool) -> None:
-        state = self.streams.pop(sid, None)
+        state = self._release(sid)
         if state is None:
             return
-        state.done = True
         if cancel:
             self.reset(sid, h2.errors.ErrorCodes.CANCEL)
-            with contextlib.suppress(OSError, ConnectionError):
-                await self.flush()
+        with contextlib.suppress(OSError, ConnectionError):
+            await self.flush()  # the reset, and the window given back by _release
         if self.goaway and not self.streams:
             await self.close()
         if self.on_capacity is not None:

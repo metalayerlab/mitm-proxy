@@ -53,6 +53,7 @@ class Origin:
     fail_connect: UpstreamError | None = None
     websocket: bool = False  # answer upgrades with 101 and echo raw bytes
     delay: float = 0.0  # seconds to "think" before the response headers
+    connect_delay: float = 0.0  # seconds before connecting (or failing to)
     tasks: list[asyncio.Task[None]] = field(default_factory=list)
 
     async def handler(self, incoming: IncomingRequest, responder: Responder) -> None:
@@ -99,6 +100,7 @@ class Origin:
             await H1Server(stream, self.handler, idle_timeout=5).run()
 
     async def connector(self, target: Target, alpn: tuple[str, ...], timeout: float) -> Connected:
+        await asyncio.sleep(self.connect_delay)
         if self.fail_connect is not None:
             raise self.fail_connect
         proxy_end, origin_end = memory_pair()
