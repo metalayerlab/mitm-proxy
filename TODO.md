@@ -40,3 +40,5 @@ the team (and its AI assistants) should know at a glance.
 - Secret hashes in reported effective config: brute-forceable; report `{"set": bool}` (design 0002).
 - `/readyz` depending on control-plane reachability: an outage would drain the whole fleet (design 0002).
 - Automatic re-enrollment after 401/403: single-use token loops; revoked stays revoked (design 0002).
+- Running `on_response` for flows middleware answered itself (STOP/DENY): changes what STOP means; cache and rewrite middleware would act on local answers (design 0005).
+- Calling `on_done` from background tasks: hooks are never `create_task`ed (design 0006).
