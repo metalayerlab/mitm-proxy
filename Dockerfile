@@ -46,6 +46,8 @@ COPY --from=builder /opt/venv /opt/venv
 # Both listeners default to 127.0.0.1 (design 0001), which a published port can't
 # reach: inside the container bind all interfaces, and let the published ports
 # decide exposure. A config file or -e still overrides these.
+# Project-side addition to the template skeleton, so the template's smoke test
+# can reach /healthz; remove it when https://github.com/metalayerlab/project-template/issues/17 is fixed.
 ENV PATH="/opt/venv/bin:$PATH" \
     PYTHONUNBUFFERED=1 \
     MITM_PROXY_LISTEN_HOST=0.0.0.0 \
