@@ -51,14 +51,14 @@ def version() -> None:
 def show_config(config: ConfigOption = None) -> None:
     """Print the effective configuration and where each value came from. Secrets are masked."""
     cfg = _load(config)
-    values = {
-        "log_level": cfg.log_level,
-        "listen.host": cfg.host,
-        "listen.port": cfg.port,
-        "state_dir": cfg.state_dir,
-    }
     for setting in SETTINGS:
-        shown = "********" if setting.secret else values.get(setting.key)
+        value = cfg.values.get(setting.key)
+        if setting.secret:
+            shown = "********" if value else ""
+        elif isinstance(value, tuple):
+            shown = ", ".join(value)
+        else:
+            shown = str(value)
         typer.echo(f"{setting.key} = {shown}  ({cfg.sources[setting.key]})")
 
 

@@ -4,14 +4,53 @@
 # at it). Every key can also be set as an environment variable,
 # MITM_PROXY_<KEY> (dots become underscores), or read from a file with
 # MITM_PROXY_<KEY>_FILE. Secrets belong in _FILE, never in this file.
+# Lists are YAML lists here, comma-separated in environment variables.
 # Full reference: the wiki's In-Depth-Configuration page.
 
 # DEBUG, INFO, WARNING or ERROR
 log_level: INFO
 
+# The admin HTTP API (health, status, metrics, CA download)
 listen:
-  host: 0.0.0.0
+  host: 127.0.0.1
   port: 8080
 
-# Persistent state
+# Persistent state: the root CA lives in <state_dir>/ca/
 state_dir: /var/lib/mitm-proxy
+
+proxy:
+  # Not loopback? Set proxy.auth, or anyone who can reach it can use it.
+  host: 127.0.0.1
+  port: 3128
+  # auth: secret, `user:password` -- use MITM_PROXY_PROXY_AUTH_FILE
+  peek_timeout_ms: 1000
+  idle_timeout_ms: 120000
+  shutdown_grace_ms: 10000
+
+# Hosts to intercept; everything else is tunnelled untouched.
+intercept:
+  hosts: []
+  # hosts: [example.org, "*.example.org"]
+
+middleware:
+  # Installed middleware that may run, as name=module:attribute ("log" is built in)
+  available: []
+  # What runs, by name, in order
+  chain: []
+  # chain: [log]
+  hook_timeout_ms: 5000
+
+body:
+  max_buffer_bytes: 67108864
+
+ca:
+  # cert / key: PEM, via MITM_PROXY_CA_CERT_FILE and MITM_PROXY_CA_KEY_FILE (secret).
+  # Empty: <state_dir>/ca/, generated on first start.
+  common_name: mitm-proxy CA
+  leaf_cache_size: 1024
+
+upstream:
+  extra_ca_file: ""
+  connect_timeout_ms: 10000
+  idle_timeout_ms: 60000
+  max_connections_per_host: 6

@@ -59,3 +59,16 @@ def test_serve_starts_uvicorn(
     result = runner.invoke(app, ["serve", "-c", str(write_config("listen:\n  port: 9100\n"))])
     assert result.exit_code == 0
     assert seen["port"] == 9100
+
+
+def test_config_masks_set_secrets_and_joins_lists(
+    monkeypatch: pytest.MonkeyPatch, write_config: Callable[..., Path]
+) -> None:
+    monkeypatch.setenv("MITM_PROXY_PROXY_AUTH", "user:secret")
+    path = write_config("intercept:\n  hosts: [example.org, '*.example.org']\n")
+    result = runner.invoke(app, ["config", "-c", str(path)])
+    assert result.exit_code == 0
+    assert "proxy.auth = ********  (MITM_PROXY_PROXY_AUTH)" in result.stdout
+    assert "secret" not in result.stdout
+    assert "intercept.hosts = example.org, *.example.org  (file)" in result.stdout
+    assert "ca.key =   (default)" in result.stdout
