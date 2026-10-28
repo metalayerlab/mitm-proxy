@@ -201,6 +201,49 @@ async def test_flow_logger_logs_one_line(caplog: pytest.LogCaptureFixture) -> No
     logger = FlowLogger()
     assert await logger.on_request(flow) is Action.CONTINUE
     flow.response = Response(200, body=BufferedBodyStream(b"hello"))
+    t = flow.timings
+    t.upstream_requested, t.upstream_acquired, t.connection_reused = 10.0, 10.0015, True
+    t.request_sent, t.response_headers = 10.002, 10.0312
+    t.middleware["a"] = 0.0004
     assert await logger.on_response(flow) is Action.CONTINUE
     line = caplog.records[-1].getMessage()
-    assert f"{flow.id} http/1.1>h2 GET https://example.org/ 200 req=0 resp=5" in line
+    assert f"{flow.id} http/1.1>h2 GET https://example.org/ 200 req=0 resp=5 total=" in line
+    assert line.endswith("ms connect=1.5ms(reused) ttfb=29.2ms mw=0.4ms")
+
+
+async def test_flow_logger_prints_a_dash_for_a_stage_that_did_not_happen(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    caplog.set_level(logging.INFO, logger="mitm_proxy.flows")
+    flow = make_flow()
+    flow.response = Response.make(200, b"cached")
+    await FlowLogger().on_response(flow)
+    assert caplog.records[-1].getMessage().endswith(" connect=- ttfb=- mw=0.0ms")
+
+
+async def test_hook_time_is_summed_per_middleware_and_kept_on_failure() -> None:
+    class SlowThenBroken(Middleware):
+        async def on_request(self, flow: Flow) -> Action:
+            await asyncio.sleep(0.02)
+            return Action.CONTINUE
+
+        async def on_response(self, flow: Flow) -> Action:
+            await asyncio.sleep(0.02)
+            raise RuntimeError("boom")
+
+    flow = make_flow()
+    run = Pipeline([("slow", SlowThenBroken()), ("quick", Middleware())]).start(flow)
+    await run.run_request()
+    await run.run_response()
+    spent = flow.timings.middleware
+    assert spent["slow"] >= 0.04
+    assert spent["quick"] < 0.02
+    assert flow.timings.middleware_total == pytest.approx(spent["slow"] + spent["quick"])
+
+
+def test_timings_derive_durations_and_none_for_missing_stages() -> None:
+    t = make_flow().timings
+    assert (t.connect, t.ttfb, t.total, t.middleware_total) == (None, None, None, 0.0)
+    t.started, t.upstream_requested, t.upstream_acquired = 0.5, 1.0, 1.25
+    t.request_sent, t.response_headers, t.complete = 1.5, 2.0, 3.0
+    assert (t.connect, t.ttfb, t.total) == (0.25, 0.5, 2.5)

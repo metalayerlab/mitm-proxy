@@ -9,6 +9,7 @@ lets the two legs speak different protocols.
 from __future__ import annotations
 
 import logging
+import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass
 
@@ -133,6 +134,21 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
         type=FlowType.HTTP, protocol=ctx.protocol, client_conn=ctx.client_conn, request=request
     )
     ctx.metrics.flows.inc(kind)
+    try:
+        await _exchange(ctx, flow, incoming, responder, target, pipeline)
+    finally:
+        flow.timings.complete = time.monotonic()
+
+
+async def _exchange(
+    ctx: ExchangeContext,
+    flow: Flow,
+    incoming: IncomingRequest,
+    responder: Responder,
+    target: Target,
+    pipeline: Pipeline | None,
+) -> None:
+    request = flow.request
     run = pipeline.start(flow) if pipeline is not None else None
     if run is not None:
         run.on_failure = lambda name: ctx.metrics.middleware_failures.inc(name)
@@ -145,6 +161,7 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
         if buffered.fits:
             request.body = BufferedBodyStream(buffered.join())
             request.trailers = incoming.trailers()
+            flow.timings.request_complete = time.monotonic()
         else:
             _oversize(ctx, flow, active, "request", buffered.size)
             request.body = PassthroughBody(_chain(buffered.chunks, incoming.body))
@@ -152,6 +169,7 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
         request.body = PassthroughBody(incoming.body)
     else:
         request.body = BufferedBodyStream()
+        flow.timings.request_complete = time.monotonic()
 
     if active is not None:
         outcome = await active.run_request()
@@ -214,10 +232,14 @@ async def _send_upstream(
     trailers: Callable[[], Headers | None],
 ) -> UpstreamResponse:
     request = flow.request
+    timings = flow.timings
     replayable = not has_body or isinstance(request.body, BufferedBodyStream)
+    timings.upstream_requested = time.monotonic()
     for attempt in (1, 2):
         lease = await ctx.pool.acquire(target)
         conn = lease.connection
+        timings.upstream_acquired = time.monotonic()
+        timings.connection_reused = lease.reused
         flow.server_conn = ServerConn(
             host=target.host,
             port=target.port,
@@ -229,9 +251,13 @@ async def _send_upstream(
         headers = framing.apply(
             request.headers, request_framing, length, h1=conn.protocol == "http/1.1"
         )
-        body = request.body.__aiter__() if has_body else empty()
+        if has_body:
+            body = _timed(flow, request.body.__aiter__())
+        else:
+            body = empty()
+            timings.request_sent = time.monotonic()
         try:
-            return await conn.request(
+            upstream = await conn.request(
                 request, headers, has_body=has_body, body=body, trailers=trailers
             )
         except UpstreamConnectError:
@@ -245,6 +271,9 @@ async def _send_upstream(
             if not retry:
                 raise
             log.debug("flow %s: reused connection failed; retrying on a new one", flow.id)
+        else:
+            timings.response_headers = time.monotonic()
+            return upstream
     raise UpstreamConnectError("unreachable")  # pragma: no cover - the loop returns or raises
 
 
@@ -319,6 +348,21 @@ async def _respond(
     finally:
         if upstream is not None and not source.finished:
             await upstream.discard()
+
+
+async def _timed(flow: Flow, body: AsyncIterator[bytes]) -> AsyncIterator[bytes]:
+    """The request body, stamping when its last byte was handed upstream.
+
+    Both upstream layers send the whole body before waiting for the response
+    head, so the body running out is when the request was sent. A passed-through
+    body is read from the client as it goes, so that is also when it was read.
+    """
+    async for chunk in body:
+        yield chunk
+    now = time.monotonic()
+    flow.timings.request_sent = now
+    if flow.timings.request_complete is None:
+        flow.timings.request_complete = now
 
 
 def _oversize(

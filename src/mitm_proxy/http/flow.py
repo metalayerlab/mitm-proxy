@@ -9,6 +9,7 @@ added later without changing its shape.
 from __future__ import annotations
 
 import enum
+import time
 import uuid
 from dataclasses import dataclass, field
 from typing import Any
@@ -84,6 +85,48 @@ class Response:
         return cls(status=status, headers=hdrs, body=BufferedBodyStream(body))
 
 
+@dataclass
+class Timings:
+    """When each stage of a flow happened, on the ``time.monotonic()`` clock.
+
+    Filled in by the proxy as the flow progresses; middleware reads it and does
+    not write it. A stage that didn't happen (a DENY, a STOP with a response, an
+    upstream error) stays None, and so do the durations derived from it.
+    """
+
+    started: float  # the request headers arrived
+    request_complete: float | None = None  # the request body was read (buffered or passed on)
+    upstream_requested: float | None = None  # a connection was asked of the pool
+    upstream_acquired: float | None = None  # ... and leased (or opened)
+    request_sent: float | None = None  # the request, head and body, went upstream
+    response_headers: float | None = None  # the origin's response headers arrived
+    complete: float | None = None  # the last byte went to the client
+    connection_reused: bool = False
+    middleware: dict[str, float] = field(default_factory=dict)  # seconds in each one's hooks
+
+    @property
+    def connect(self) -> float | None:
+        """Waiting for an upstream connection: pooled (about zero) or a new TCP and TLS one."""
+        return _between(self.upstream_requested, self.upstream_acquired)
+
+    @property
+    def ttfb(self) -> float | None:
+        """The origin's share: from the request being sent to its response headers."""
+        return _between(self.request_sent, self.response_headers)
+
+    @property
+    def middleware_total(self) -> float:
+        return sum(self.middleware.values())
+
+    @property
+    def total(self) -> float | None:
+        return _between(self.started, self.complete)
+
+
+def _between(start: float | None, end: float | None) -> float | None:
+    return None if start is None or end is None else end - start
+
+
 class Flow:
     def __init__(
         self,
@@ -102,6 +145,7 @@ class Flow:
         self.request = request
         self.response: Response | None = None
         self.metadata: dict[str, Any] = {}
+        self.timings = Timings(started=time.monotonic())
 
     @property
     def protocol(self) -> str:

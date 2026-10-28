@@ -18,6 +18,7 @@ import asyncio
 import enum
 import importlib
 import logging
+import time
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any
@@ -154,6 +155,7 @@ class FlowPipeline:
     async def _call(self, entry: Entry, hook: str, *args: Any) -> Any:
         """Await one hook under the timeout; on failure, log it and return None."""
         method: Callable[..., Awaitable[Any]] = getattr(entry.middleware, hook)
+        start = time.monotonic()
         try:
             async with asyncio.timeout(self.hook_timeout):
                 return await method(*args)
@@ -168,6 +170,9 @@ class FlowPipeline:
             self._mark(entry.name)
         except Exception:
             self.fail(entry.name, hook)
+        finally:
+            spent = self.flow.timings.middleware
+            spent[entry.name] = spent.get(entry.name, 0.0) + time.monotonic() - start
         return None
 
     async def _run_phase(self, hook: str) -> Outcome:

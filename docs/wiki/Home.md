@@ -13,7 +13,7 @@ $ curl --proxy http://127.0.0.1:3128 --cacert mitm-ca.pem https://example.org/
 The proxy logs one line per intercepted request (client protocol > origin protocol):
 
 ```text
-INFO mitm_proxy.flows: 9ae147a67a5e4b78 http/1.1>h2 GET https://example.org/ 200 req=0 resp=1256 41.0ms
+INFO mitm_proxy.flows: 9ae147a67a5e4b78 http/1.1>h2 GET https://example.org/ 200 req=0 resp=1256 total=41.0ms connect=0.0ms(reused) ttfb=29.1ms mw=0.4ms
 ```
 
 ## Table of Contents

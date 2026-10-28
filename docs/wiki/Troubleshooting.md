@@ -35,6 +35,21 @@ A middleware that rewrites bodies applies to the flow, so the request body is se
 
 The middleware raised or ran past `middleware.hook_timeout_ms`. The flow carried on without it. Fix the middleware; the traceback is in the log. A middleware that *blocks* the event loop can't be timed out and stalls everything: make it async.
 
+### Requests are slow: the proxy, the origin or a middleware?
+
+Turn on the `log` middleware (`middleware.chain: [log]`) and read the end of each flow line:
+
+```text
+… 200 req=0 resp=1256 total=812.4ms connect=153.0ms ttfb=640.2ms mw=0.4ms
+```
+
+- **`ttfb`** is the origin: from the request being sent to its response headers. If it's most of `total`, the origin is slow, not the proxy.
+- **`connect`** is waiting for an upstream connection. Without `(reused)`, it's a new TCP and TLS connection, and high values point at DNS or the network to the origin. With `(reused)` it's normally about 0; a high value means the request queued for a free connection because the host had `upstream.max_connections_per_host` busy ones.
+- **`mw`** is time spent in middleware hooks. To find which one, read `flow.timings.middleware` (see [Writing Middleware](Writing-Middleware)).
+- **The rest** of `total` is the proxy's own work plus moving the bodies. For a flow middleware buffers, that includes receiving the whole response body from the origin. A large remainder on a big response is the download, not the proxy.
+
+The line is written from the response hook, before the response goes to the client, so `total` runs to when the whole response has arrived. `-` means that stage didn't happen (for example, `connect=-` on a response a middleware sent itself).
+
 ### `… body is over body.max_buffer_bytes …; streaming it through without middleware`
 
 That body was bigger than `body.max_buffer_bytes`, so middleware didn't see it. Raise the limit if you need to inspect such bodies (they're held in memory).

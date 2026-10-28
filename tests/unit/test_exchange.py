@@ -372,3 +372,82 @@ async def test_a_body_that_fits_is_joined_once() -> None:
     assert buffered.fits and buffered.size == 4
     assert buffered.join() == b"abcd"
     assert buffered.chunks == []  # released after joining
+
+
+async def _completed(flow: Flow) -> None:
+    """The proxy stamps complete just after the client has the last byte."""
+    while flow.timings.complete is None:
+        await asyncio.sleep(0)
+
+
+@pytest.mark.parametrize(("client_proto", "origin_proto"), PAIRS)
+async def test_timings_split_the_origin_from_middleware(
+    client_proto: str, origin_proto: str
+) -> None:
+    class Slow(Middleware):
+        async def on_request(self, flow: Flow) -> Action:
+            await asyncio.sleep(0.03)
+            return Action.CONTINUE
+
+    watch = Watch()
+    b = bench(Origin(protocol=origin_proto, echo=True, delay=0.05))
+    context = b.context(client_proto, [("watch", watch), ("slow", Slow())])
+    client = await client_for(b.proxy(context), client_proto)
+    await send(client, "POST", "/", body=b"abc")
+    await send(client)
+    first, second = watch.flows
+    await _completed(first)
+    await _completed(second)
+    t = first.timings
+    assert t.ttfb is not None and t.ttfb >= 0.05
+    assert t.middleware["slow"] >= 0.03 and t.middleware_total >= 0.03
+    assert t.connect is not None and not t.connection_reused
+    assert second.timings.connection_reused
+    stamps = [
+        t.started,
+        t.request_complete,
+        t.upstream_requested,
+        t.upstream_acquired,
+        t.request_sent,
+        t.response_headers,
+        t.complete,
+    ]
+    times = [s for s in stamps if s is not None]
+    assert len(times) == len(stamps) and times == sorted(times)
+    assert t.total is not None and t.total >= t.ttfb + t.middleware_total
+    await b.close()
+
+
+async def test_a_denied_flow_has_no_upstream_timings() -> None:
+    class Deny(Middleware):
+        async def on_request(self, flow: Flow) -> Action:
+            self.flow = flow
+            return Action.DENY
+
+    deny = Deny()
+    b = bench()
+    client = await client_for(b.proxy(b.context("http/1.1", [("guard", deny)])), "http/1.1")
+    assert (await send(client)).status == 403
+    await _completed(deny.flow)
+    t = deny.flow.timings
+    assert (t.connect, t.ttfb, t.request_sent) == (None, None, None)
+    assert t.total is not None and "guard" in t.middleware
+    await b.close()
+
+
+async def test_a_passed_through_request_body_is_complete_when_sent() -> None:
+    class Grab(Middleware):
+        def applies_to(self, flow: Flow) -> bool:
+            self.flow = flow  # the hooks never run: the body overflows
+            return True
+
+    grab = Grab()
+    b = bench(Origin(echo=True))
+    # A tiny buffer limit: the request body overflows and streams through.
+    context = b.context("http/1.1", [("grab", grab)], max_buffer=2)
+    client = await client_for(b.proxy(context), "http/1.1")
+    reply = await send(client, "POST", "/", body=b"a longer body")
+    assert reply.body == b"a longer body"
+    t = grab.flow.timings
+    assert t.request_complete is not None and t.request_complete == t.request_sent
+    await b.close()

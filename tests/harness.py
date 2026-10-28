@@ -52,6 +52,7 @@ class Origin:
     connections: int = 0
     fail_connect: UpstreamError | None = None
     websocket: bool = False  # answer upgrades with 101 and echo raw bytes
+    delay: float = 0.0  # seconds to "think" before the response headers
     tasks: list[asyncio.Task[None]] = field(default_factory=list)
 
     async def handler(self, incoming: IncomingRequest, responder: Responder) -> None:
@@ -75,6 +76,7 @@ class Origin:
                 await stream.write(chunk.upper())
             await stream.close()
             return
+        await asyncio.sleep(self.delay)
         body = data if self.echo else self.body
         headers = Headers(self.headers)
         if not self.chunked:

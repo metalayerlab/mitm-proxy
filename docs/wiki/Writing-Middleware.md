@@ -68,8 +68,40 @@ Every hook except `applies_to` is `async`. In this version bodies are buffered, 
 | `flow.client_conn` | Client address, SNI, offered ALPN, TLS version and cipher |
 | `flow.server_conn` | Origin host, port, address, and the protocol on that side |
 | `flow.metadata` | A dict for your own state between hooks |
+| `flow.timings` | When each stage happened (read-only; see [Timings](#timings)) |
 
 Headers are a case-insensitive multimap with lower-case names (`get`, `get_all`, `set`, `add`, `remove`). Connection-level headers (`Connection`, `Transfer-Encoding`, `Keep-Alive`, `Proxy-*`…) are already removed, and `Host` / `:authority` is `request.authority`, so you never deal with protocol differences. Bodies are de-framed but not decompressed: check `content-encoding` before reading text. Read a whole body with `await flow.request.body.read_all()`, or replace it with `flow.response.body = BufferedBodyStream(b"…")`.
+
+## Timings
+
+`flow.timings` is filled in by the proxy as the flow goes. The stamps are seconds on the `time.monotonic()` clock (compare them with each other or with `time.monotonic()`, never with wall-clock time). A stage that hasn't happened yet, or never will (a `DENY`, a `STOP` with your own response, an upstream error), is `None`.
+
+| Stamp | When |
+|---|---|
+| `started` | The request headers arrived |
+| `request_complete` | The request body was read |
+| `upstream_requested`, `upstream_acquired` | A connection was asked of the pool, and leased or opened (`connection_reused` says which) |
+| `request_sent` | The whole request went to the origin |
+| `response_headers` | The origin's response headers arrived |
+| `complete` | The last byte went to the client (after every hook has run, so hooks never see it set) |
+
+The derived durations, in seconds, are `connect` (waiting for an upstream connection), `ttfb` (the origin's share: request sent to response headers), `middleware_total` and `total`. `timings.middleware` holds the time each middleware has spent in its hooks so far, by name.
+
+```python
+import logging
+import time
+
+
+class SlowOrigins(Middleware):
+    async def on_response(self, flow: Flow) -> Action:
+        ttfb = flow.timings.ttfb
+        if ttfb is not None and ttfb > 1.0:
+            so_far = time.monotonic() - flow.timings.started
+            logging.getLogger(__name__).warning(
+                "%s took %.1fs to answer (%.1fs so far)", flow.host, ttfb, so_far
+            )
+        return Action.CONTINUE
+```
 
 ## Rules
 

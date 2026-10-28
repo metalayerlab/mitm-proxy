@@ -20,17 +20,21 @@ def _size(body: BodyStream) -> str:
     return str(len(body)) if isinstance(body, BufferedBodyStream) else "-"
 
 
-class FlowLogger(Middleware):
-    async def on_request(self, flow: Flow) -> Action:
-        flow.metadata["log.started"] = time.monotonic()
-        return Action.CONTINUE
+def _ms(seconds: float | None) -> str:
+    return "-" if seconds is None else f"{seconds * 1000:.1f}ms"
 
+
+class FlowLogger(Middleware):
     async def on_response(self, flow: Flow) -> Action:
-        request, response = flow.request, flow.response
-        started = flow.metadata.get("log.started", time.monotonic())
+        request, response, timings = flow.request, flow.response, flow.timings
         upstream = flow.server_conn.protocol if flow.server_conn else "-"
+        # Logged from on_response, before the response goes to the client: total runs to now
+        # (the whole response is in), not to the last byte sent.
+        connect = _ms(timings.connect)
+        if timings.connect is not None and timings.connection_reused:
+            connect += "(reused)"
         log.info(
-            "%s %s>%s %s %s://%s%s %s req=%s resp=%s %.1fms",
+            "%s %s>%s %s %s://%s%s %s req=%s resp=%s total=%s connect=%s ttfb=%s mw=%s",
             flow.id,
             flow.protocol,
             upstream,
@@ -41,6 +45,9 @@ class FlowLogger(Middleware):
             response.status if response else "-",
             _size(request.body),
             _size(response.body) if response else "-",
-            (time.monotonic() - started) * 1000,
+            _ms(time.monotonic() - timings.started),
+            connect,
+            _ms(timings.ttfb),
+            _ms(timings.middleware_total),
         )
         return Action.CONTINUE
