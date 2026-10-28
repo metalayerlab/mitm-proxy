@@ -130,3 +130,19 @@ async def test_a_response_hook_can_give_a_bodiless_response_a_body(client_proto:
     reply = await asyncio.wait_for(send(client), 2)
     assert (reply.status, reply.body) == (200, b"filled in")
     await b.close()
+
+
+async def test_an_applies_to_failure_is_counted() -> None:
+    """Finding 8: the failure metric must see errors raised in applies_to too."""
+    from mitm_proxy.http.flow import Flow
+    from mitm_proxy.pipeline import Middleware
+
+    class Broken(Middleware):
+        def applies_to(self, flow: Flow) -> bool:
+            raise RuntimeError("boom")
+
+    b = bench()
+    client = await client_for(b.proxy(b.context("http/1.1", [("broken", Broken())])), "http/1.1")
+    assert (await send(client)).status == 200  # skipped, and the flow carries on
+    assert b.metrics.middleware_failures.values == {("broken",): 1.0}
+    await b.close()

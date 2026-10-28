@@ -262,8 +262,7 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
             await _websocket(ctx, flow, incoming, switch, tally, target)
         else:
             if pipeline is not None:
-                run = pipeline.start(flow)
-                run.on_failure = lambda name: ctx.metrics.middleware_failures.inc(name)
+                run = pipeline.start(flow, ctx.metrics.middleware_failures.inc)
             timed = ctx.server_timing and ctx.intercepts(request)
             await _exchange(ctx, flow, incoming, tally, target, run, timed)
     finally:

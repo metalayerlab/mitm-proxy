@@ -108,9 +108,13 @@ class Pipeline:
     def names(self) -> list[str]:
         return [e.name for e in self._entries]
 
-    def start(self, flow: Flow) -> FlowPipeline:
-        """The middleware that applies to flow, decided once, now."""
+    def start(self, flow: Flow, on_failure: Callable[[str], None] | None = None) -> FlowPipeline:
+        """The middleware that applies to flow, decided once, now.
+
+        on_failure is called with a middleware's name when it fails, from applies_to on.
+        """
         run = FlowPipeline(flow, self.hook_timeout)
+        run.on_failure = on_failure
         for entry in self._entries:
             try:
                 applies = entry.middleware.applies_to(flow)
