@@ -9,7 +9,7 @@ the team (and its AI assistants) should know at a glance.
 - [x] Replace every `<!-- guidance -->` comment in docs/wiki/ (a Release PR is blocked until then)
 - [ ] project-template: `scripts/gen-wiki.py` skips Typer sub-groups (`ca init`, `ca show`, `scope check` are documented by hand in CLI-Reference)
 - [ ] project-template: the Dockerfile skeleton `EXPOSE`s only 8080; the proxy also listens on 3128
-- [ ] Flow duration histogram (`mitm_proxy_flow_duration_seconds` by stage): deferred by design 0003; needs its own record and bucket choices
+- [ ] Flow duration histograms: design 0007 (Proposed), awaiting approval
 - [ ] Design 0002 (Proposed): answer its open questions; the control-plane client, enrollment and managed mode are not built
 
 ## Decided against (don't re-propose without reading this first)
