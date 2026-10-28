@@ -28,3 +28,20 @@ def write_config(tmp_path: Path) -> Callable[..., Path]:
         return path
 
     return write
+
+
+ASYNC_TEST_TIMEOUT = 10.0
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_pyfunc_call(pyfuncitem: pytest.Function) -> bool | None:
+    """Run `async def` tests on a fresh event loop, failing any that hang."""
+    import asyncio
+    import inspect
+
+    if not inspect.iscoroutinefunction(pyfuncitem.obj):
+        return None
+    names = pyfuncitem._fixtureinfo.argnames
+    kwargs = {name: pyfuncitem.funcargs[name] for name in names}
+    asyncio.run(asyncio.wait_for(pyfuncitem.obj(**kwargs), ASYNC_TEST_TIMEOUT))
+    return True
