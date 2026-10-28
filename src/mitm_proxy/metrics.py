@@ -59,7 +59,7 @@ class Gauge(Metric):
         read: Callable[[], Mapping[LabelValues, float]] | None = None,
     ) -> None:
         super().__init__(name, help, "gauge", labels)
-        self._read = read
+        self.read = read  # if set, the samples come from here, not from set()/add()
 
     def set(self, value: float, *values: str) -> None:
         self.values[values] = value
@@ -68,7 +68,7 @@ class Gauge(Metric):
         self.values[values] = self.values.get(values, 0.0) + amount
 
     def samples(self) -> Mapping[LabelValues, float]:
-        return self._read() if self._read is not None else self.values
+        return self.read() if self.read is not None else self.values
 
 
 class Metrics:
