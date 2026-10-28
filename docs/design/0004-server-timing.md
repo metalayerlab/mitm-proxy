@@ -2,7 +2,7 @@
 
 <!-- Add a line for this record to the index in docs/design/README.md (CI checks). -->
 
-Status: Proposed
+Status: Approved
 Date: 2026-10-28
 Authors: Stephen Cox; drafted by Claude (Claude Code)
 
@@ -107,9 +107,9 @@ managed-config change (0002) applies to new connections like every other setting
 
 ## Open questions
 
-1. **Name and place.** `proxy.server_timing` (the proxy's behaviour towards clients), or a new
-   `response.` section in case more response-side options follow?
-2. **`mitm-local` names the middleware** (`desc="cache"`). Useful in devtools, but it shows middleware
-   names to clients. Keep it, or say only `desc="middleware"`?
-3. **`mitm-proxy`.** Keep it (the time to the response head, which is easy to misread as a total), or
-   leave it out and rely on the browser's own timings?
+Resolved at approval (2026-10-28):
+
+1. **Name and place:** `proxy.server_timing`.
+2. **`mitm-local`** keeps the middleware's name (`desc="cache"`): the setting is off by default, and the
+   name is what makes the metric useful in devtools.
+3. **`mitm-proxy`** stays, documented as the time to the response head, not a total.
