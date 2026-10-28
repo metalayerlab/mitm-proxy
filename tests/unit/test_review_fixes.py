@@ -167,3 +167,46 @@ async def test_a_failed_websocket_switch_closes_the_upstream_socket() -> None:
     # The origin echoes until its socket closes: its task ends only if the proxy closed it.
     await asyncio.wait_for(asyncio.gather(*b.origin.tasks), 2)
     await b.close()
+
+
+def _goaway(error_code: int) -> bytes:
+    """A raw GOAWAY frame, written past the test client's own h2 state machine."""
+    from hyperframe.frame import GoAwayFrame
+
+    frame = GoAwayFrame(0)
+    frame.last_stream_id = 1
+    frame.error_code = error_code
+    return bytes(frame.serialize())
+
+
+async def test_streams_finish_after_a_graceful_goaway() -> None:
+    """Finding 5: a graceful GOAWAY lets open streams complete (RFC 9113, 6.8).
+
+    Also pins the override of h2's private GOAWAY handler: an h2 upgrade that changes
+    it fails here.
+    """
+    big = b"z" * (3 * 1024 * 1024)  # needs WINDOW_UPDATEs read after the GOAWAY
+    b = bench(Origin(body=big, delay=0.1))  # the whole download comes after the GOAWAY
+    stream = b.proxy(b.context("h2"))
+    client = await client_for(stream, "h2")
+    download = asyncio.create_task(send(client, path="/big"))
+    await asyncio.sleep(0.02)
+    await stream.write(_goaway(0))
+    reply = await asyncio.wait_for(download, 5)
+    assert (reply.status, len(reply.body)) == (200, len(big))
+    await asyncio.wait_for(b.tasks[-1], 2)  # and then the connection ends
+    await b.close()
+
+
+async def test_an_error_goaway_still_ends_the_connection_at_once() -> None:
+    from mitm_proxy.errors import UpstreamError
+
+    b = bench(Origin(body=b"z" * (3 * 1024 * 1024), delay=0.1))
+    stream = b.proxy(b.context("h2"))
+    client = await client_for(stream, "h2")
+    download = asyncio.create_task(send(client, path="/big"))
+    await asyncio.sleep(0.02)
+    await stream.write(_goaway(2))  # INTERNAL_ERROR
+    with pytest.raises(UpstreamError):
+        await asyncio.wait_for(download, 5)
+    await b.close()

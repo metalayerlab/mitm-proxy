@@ -16,7 +16,7 @@ import contextlib
 import logging
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import h2.config
 import h2.connection
@@ -38,6 +38,11 @@ from mitm_proxy.http.normalize import (
 )
 from mitm_proxy.streams import ByteStream
 
+if TYPE_CHECKING:
+    # Types only: hyperframe is h2's own dependency, not one of ours.
+    from h2.events import Event
+    from hyperframe.frame import Frame, GoAwayFrame
+
 log = logging.getLogger(__name__)
 
 WINDOW = 1024 * 1024
@@ -56,6 +61,28 @@ class _Stream:
     done: bool = False
 
 
+class _ServerConnection(h2.connection.H2Connection):
+    """h2's connection, but open streams may finish after a client's graceful GOAWAY.
+
+    RFC 9113 (section 6.8) lets streams up to a GOAWAY's last_stream_id complete. h2
+    instead moves the whole connection to CLOSED on any GOAWAY it receives, then refuses
+    to send DATA (and drops what's queued), so a download in progress would be cut off.
+    For a graceful (NO_ERROR) GOAWAY this keeps the connection open: the client opens no
+    new streams, and the server stops once the open ones are done. This overrides a
+    private h2 method (4.x); the GOAWAY regression test pins it.
+    """
+
+    def _receive_goaway_frame(self, frame: GoAwayFrame) -> tuple[list[Frame], list[Event]]:
+        open_state = h2.connection.ConnectionState.SERVER_OPEN
+        if frame.error_code != 0 or self.state_machine.state is not open_state:
+            return super()._receive_goaway_frame(frame)
+        event = h2.events.ConnectionTerminated()
+        event.error_code = h2.errors.ErrorCodes.NO_ERROR
+        event.last_stream_id = frame.last_stream_id
+        event.additional_data = frame.additional_data or None
+        return [], [event]
+
+
 def _regular(raw: list[tuple[bytes, bytes]]) -> Headers:
     return Headers.from_bytes((k, v) for k, v in raw if not k.startswith(b":"))
 
@@ -63,7 +90,8 @@ def _regular(raw: list[tuple[bytes, bytes]]) -> Headers:
 class _H2Connection:
     def __init__(self, stream: ByteStream, *, client_side: bool) -> None:
         self.stream = stream
-        self.conn = h2.connection.H2Connection(
+        connection = h2.connection.H2Connection if client_side else _ServerConnection
+        self.conn = connection(
             h2.config.H2Configuration(client_side=client_side, header_encoding=None)
         )
         self.streams: dict[int, _Stream] = {}
@@ -189,6 +217,8 @@ class H2Server(_H2Connection):
         self.idle_timeout = idle_timeout
         self._tasks: dict[int, asyncio.Task[None]] = {}
         self._goaway = False  # the client said it will open no more streams
+        self._drained = asyncio.Event()  # set while no stream is being served
+        self._drained.set()
 
     async def run(self) -> None:
         self._initiate(
@@ -196,14 +226,19 @@ class H2Server(_H2Connection):
         )
         try:
             await self.flush()
-            while not self._goaway:
-                timeout = None if self._tasks else self.idle_timeout
-                try:
-                    data = await asyncio.wait_for(self.stream.read(), timeout)
-                except TimeoutError:
-                    self.conn.close_connection()
-                    await self.flush()
-                    break
+            while not (self._goaway and not self._tasks):
+                if self._goaway:
+                    # The client opens no new streams, but the open ones still need its
+                    # WINDOW_UPDATEs and request DATA: read until they've finished.
+                    data = await self._read_until_drained()
+                else:
+                    timeout = None if self._tasks else self.idle_timeout
+                    try:
+                        data = await asyncio.wait_for(self.stream.read(), timeout)
+                    except TimeoutError:
+                        self.conn.close_connection()
+                        await self.flush()
+                        break
                 if not data:
                     break
                 try:
@@ -235,6 +270,22 @@ class H2Server(_H2Connection):
         for sid, known in list(self._tasks.items()):
             if known is task:
                 del self._tasks[sid]
+        if not self._tasks:
+            self._drained.set()
+
+    async def _read_until_drained(self) -> bytes:
+        """The next bytes from the client, or b"" once no stream is left (or on idle)."""
+        read = asyncio.ensure_future(self.stream.read())
+        drained = asyncio.ensure_future(self._drained.wait())
+        done, _ = await asyncio.wait(
+            {read, drained}, timeout=self.idle_timeout, return_when=asyncio.FIRST_COMPLETED
+        )
+        drained.cancel()
+        if read in done:
+            return read.result()
+        read.cancel()  # the connection is ending: nothing more will be read from it
+        await asyncio.gather(read, return_exceptions=True)
+        return b""
 
     async def _dispatch(self, event: h2.events.Event) -> None:
         if isinstance(event, h2.events.RequestReceived) and event.stream_id is not None:
@@ -245,6 +296,7 @@ class H2Server(_H2Connection):
                 self._serve(sid, list(event.headers or []), not event.stream_ended, state)
             )
             self._tasks[sid] = task
+            self._drained.clear()
             task.add_done_callback(self._task_done)
         elif isinstance(event, h2.events.DataReceived):
             self._on_data(event)
