@@ -72,7 +72,7 @@ Every hook except `applies_to` is `async`. In this version bodies are buffered, 
 | `flow.timings` | When each stage happened (read-only; see [Timings](#timings)) |
 | `flow.outcome` | How the flow ended (read-only; `None` until it has; see [When a flow ends](#when-a-flow-ends)) |
 
-Headers are a case-insensitive multimap with lower-case names (`get`, `get_all`, `set`, `add`, `remove`). Connection-level headers (`Connection`, `Transfer-Encoding`, `Keep-Alive`, `Proxy-*`…) are already removed, and `Host` / `:authority` is `request.authority`, so you never deal with protocol differences. Bodies are de-framed but not decompressed: check `content-encoding` before reading text. Read a whole body with `await flow.request.body.read_all()`, or replace it with `flow.response.body = BufferedBodyStream(b"…")`.
+Headers are a case-insensitive multimap with lower-case names (`get`, `get_all`, `set`, `add`, `remove`). Connection-level headers (`Connection`, `Transfer-Encoding`, `Keep-Alive`, `Proxy-*`…) are already removed, and `Host` / `:authority` is `request.authority`, so you never deal with protocol differences. Bodies are de-framed but not decompressed: check `content-encoding` before reading text. Read a whole body with `await flow.request.body.read_all()`, or replace it with `flow.response.body = BufferedBodyStream(b"…")`. You can also change `flow.response.status`, or replace `flow.response` entirely. The framing follows the response you leave: a status that can't have a body (`1xx`, `204`, `304`, or any response to `HEAD`) is sent without one, even if the origin's had one.
 
 ## Timings
 

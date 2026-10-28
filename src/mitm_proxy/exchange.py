@@ -527,6 +527,9 @@ async def _respond(
                     )
                     return
                 response = flow.response or response
+                # The hooks may have changed the status (a 304) or the whole response
+                # (a 204 that now has a body): frame what will actually be sent.
+                allows_body = framing.response_allows_body(request.method, response.status)
                 if allows_body and isinstance(response.body, BufferedBodyStream):
                     data = await active.run_response_chunk(await response.body.read_all(), True)
                     response.body = BufferedBodyStream(data)

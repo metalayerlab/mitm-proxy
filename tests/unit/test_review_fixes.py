@@ -90,3 +90,43 @@ def test_a_cached_leaf_is_replaced_before_it_expires(monkeypatch: pytest.MonkeyP
     assert renewed is not first  # a day before expiry: a fresh leaf
     clock[0] = start + datetime.timedelta(days=40)
     assert authority.server_context("example.org") is renewed  # the new one lasts 30 days
+
+
+@pytest.mark.parametrize("client_proto", ["http/1.1", "h2"])
+async def test_a_response_hook_can_make_a_response_bodiless(client_proto: str) -> None:
+    """Finding 4: framing follows the status middleware leaves, not the origin's."""
+    from mitm_proxy.http.flow import Flow
+    from mitm_proxy.pipeline import Action, Middleware
+
+    class NotModified(Middleware):
+        async def on_response(self, flow: Flow) -> Action:
+            assert flow.response is not None
+            flow.response.status = 304
+            return Action.CONTINUE
+
+    b = bench(Origin(body=b"a body a 304 must not carry"))
+    ctx = b.context(client_proto, [("cache", NotModified())])
+    client = await client_for(b.proxy(ctx), client_proto)
+    first = await asyncio.wait_for(send(client), 2)
+    second = await asyncio.wait_for(send(client), 2)  # the connection survived
+    assert (first.status, first.body) == (304, b"")
+    assert second.status == 304
+    await b.close()
+
+
+@pytest.mark.parametrize("client_proto", ["http/1.1", "h2"])
+async def test_a_response_hook_can_give_a_bodiless_response_a_body(client_proto: str) -> None:
+    """Finding 4: a 204 replaced by a 200 with a body keeps that body."""
+    from mitm_proxy.http.flow import Flow
+    from mitm_proxy.pipeline import Action, Middleware
+
+    class Fill(Middleware):
+        async def on_response(self, flow: Flow) -> Action:
+            flow.response = Response.make(200, b"filled in")
+            return Action.CONTINUE
+
+    b = bench(Origin(status=204, body=b""))
+    client = await client_for(b.proxy(b.context(client_proto, [("fill", Fill())])), client_proto)
+    reply = await asyncio.wait_for(send(client), 2)
+    assert (reply.status, reply.body) == (200, b"filled in")
+    await b.close()
