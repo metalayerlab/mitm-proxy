@@ -78,7 +78,7 @@ If a middleware that can rewrite bodies (one with a chunk hook) applies to a flo
 All times are in milliseconds.
 
 - `proxy.peek_timeout_ms`: after a CONNECT to a listed host, how long to wait for the client's TLS ClientHello. Some protocols wait for the server to speak first, so a silent client isn't an error: the tunnel is relayed raw when the time is up.
-- `proxy.idle_timeout_ms`: a client connection or tunnel with no traffic for this long, and no request in progress, is closed. A request in progress is bounded on its own: a request body that stops arriving, a client that stops reading the response (on HTTP/2, gives no flow-control window), or an origin that doesn't answer each end that request after this long. On HTTP/2 the connection's other streams carry on. A slow origin gets its `504`, not a dropped connection.
+- `proxy.idle_timeout_ms`: a client connection or tunnel with no traffic for this long, and no request in progress, is closed. A request in progress is bounded on its own: a request body that stops arriving, a client that stops reading the response (on HTTP/2, gives no flow-control window), or an origin that doesn't answer each end that request after this long. So does a write to either side that makes no progress (a peer that stopped reading its socket). On HTTP/2 the connection's other streams carry on. A slow origin gets its `504`, not a dropped connection.
 - `upstream.connect_timeout_ms`: connecting to an origin, TCP and TLS together, *including* waiting for a free connection when `upstream.max_connections_per_host` are all busy.
 - `middleware.hook_timeout_ms`: a hook that takes longer has failed, and that middleware is skipped for the rest of the flow.
 

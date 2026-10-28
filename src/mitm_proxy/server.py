@@ -98,7 +98,12 @@ class ProxyServer:
         )
         self.ca = CertificateAuthority(cert, key, cache_size=config.leaf_cache_size)
         self.metrics.certificate_expiry.set(cert.not_valid_after_utc.timestamp(), "ca")
-        self.connector = connector or TCPConnector(UpstreamContexts(config.upstream_extra_ca_file))
+        # proxy.idle_timeout_ms also bounds socket writes, both ways: a peer that stops
+        # reading would otherwise hold its flow (and connection) forever.
+        idle = config.idle_timeout_ms / 1000
+        self.connector = connector or TCPConnector(
+            UpstreamContexts(config.upstream_extra_ca_file), write_timeout=idle
+        )
         self.pool = ConnectionPool(
             self.connector,
             max_per_host=config.upstream_max_connections_per_host,
@@ -166,6 +171,11 @@ class ProxyServer:
         self.state = "ready"
 
     @property
+    def client_write_timeout(self) -> float:
+        """Taken from the snapshot when a client connects, like every setting."""
+        return self.snapshot.config.idle_timeout_ms / 1000
+
+    @property
     def port(self) -> int:
         """The bound port (useful when proxy.port is 0 in tests)."""
         if self._server is None or not self._server.sockets:
@@ -176,7 +186,7 @@ class ProxyServer:
         task = asyncio.current_task()
         if task is not None:
             self._connections.add(task)
-        stream = PlainStream(reader, writer)
+        stream = PlainStream(reader, writer, write_timeout=self.client_write_timeout)
         self.metrics.client_connections.add(1)
         try:
             await self.source.handle_client(stream, stream.peer())

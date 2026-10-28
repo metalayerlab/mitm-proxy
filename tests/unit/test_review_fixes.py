@@ -2,6 +2,7 @@
 
 import asyncio
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import pytest
 
@@ -12,6 +13,7 @@ from mitm_proxy.http.h2 import H2Upstream
 from mitm_proxy.http.headers import Headers
 from mitm_proxy.http.messages import IncomingRequest
 from mitm_proxy.pipeline import Middleware
+from mitm_proxy.streams import PlainStream
 from tests.harness import Origin, bench, client_for, send
 from tests.unit.test_access_log import _no_body
 
@@ -370,3 +372,65 @@ async def test_cancelling_a_draining_connection_leaves_no_tasks_behind() -> None
     pending.cancel()
     await asyncio.gather(pending, return_exceptions=True)
     await b.close()
+
+
+# Third review: socket writes had no bound.
+
+
+async def _socket_pair() -> tuple[PlainStream, asyncio.StreamWriter, PlainStream]:
+    """A connected local socket pair (no network): our stream, and a peer that never reads."""
+    import socket
+
+    ours, theirs = socket.socketpair()
+    for sock in (ours, theirs):  # small buffers: a few writes fill them
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 4096)
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    reader, writer = await asyncio.open_connection(sock=ours)
+    peer_reader, peer_writer = await asyncio.open_connection(sock=theirs)
+    return (
+        PlainStream(reader, writer, write_timeout=IDLE),
+        peer_writer,
+        PlainStream(peer_reader, peer_writer),
+    )
+
+
+async def test_a_write_to_a_peer_that_stopped_reading_fails_after_the_timeout() -> None:
+    """Third review: a socket write must not wait forever (an origin or client that hangs)."""
+    stream, peer_writer, _ = await _socket_pair()
+    loop = asyncio.get_running_loop()
+    started = loop.time()
+    with pytest.raises(ConnectionResetError, match="stopped reading"):
+        for _ in range(10_000):  # far more than the socket buffers hold
+            await asyncio.wait_for(stream.write(b"x" * 65536), 5)
+    assert loop.time() - started < 2
+    assert stream.is_closing()  # aborted: the stream is unusable after a timed-out write
+    peer_writer.close()
+
+
+async def test_a_write_to_a_reading_peer_is_not_cut_off() -> None:
+    stream, peer_writer, peer = await _socket_pair()
+
+    async def drain_slowly() -> int:
+        received = 0
+        while chunk := await peer.read():
+            received += len(chunk)
+            await asyncio.sleep(IDLE / 10)  # slower than the writer, but steady
+        return received
+
+    reader = asyncio.create_task(drain_slowly())
+    for _ in range(20):
+        await stream.write(b"y" * 8192)
+    await stream.close()
+    assert await asyncio.wait_for(reader, 10) == 20 * 8192
+    peer_writer.close()
+
+
+def test_both_ends_get_the_write_timeout(tmp_path: Path) -> None:
+    from mitm_proxy.server import ProxyServer
+    from mitm_proxy.upstream.pool import TCPConnector
+    from tests.unit.test_server import make_config
+
+    proxy = ProxyServer(make_config(tmp_path, MITM_PROXY_PROXY_IDLE_TIMEOUT_MS="7000"))
+    assert isinstance(proxy.connector, TCPConnector)
+    assert proxy.connector.write_timeout == 7.0  # origins
+    assert proxy.client_write_timeout == 7.0  # clients

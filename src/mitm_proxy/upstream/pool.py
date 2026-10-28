@@ -55,8 +55,9 @@ class Connector(Protocol):
 class TCPConnector:
     """Open a TCP (and, for TLS targets, verified TLS) connection."""
 
-    def __init__(self, contexts: UpstreamContexts) -> None:
+    def __init__(self, contexts: UpstreamContexts, *, write_timeout: float | None = None) -> None:
         self.contexts = contexts
+        self.write_timeout = write_timeout  # an origin that stops reading fails the write
 
     async def __call__(self, target: Target, alpn: tuple[str, ...], timeout: float) -> Connected:
         ctx: ssl.SSLContext | None = self.contexts.for_alpn(alpn) if target.tls else None
@@ -88,7 +89,8 @@ class TCPConnector:
             negotiated = ssl_object.selected_alpn_protocol()
         peer = writer.get_extra_info("peername")
         address = (str(peer[0]), int(peer[1])) if isinstance(peer, tuple) else None
-        return Connected(PlainStream(reader, writer), negotiated, address)
+        stream = PlainStream(reader, writer, write_timeout=self.write_timeout)
+        return Connected(stream, negotiated, address)
 
 
 Upstream = H1Upstream | H2Upstream

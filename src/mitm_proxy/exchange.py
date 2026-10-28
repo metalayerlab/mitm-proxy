@@ -244,7 +244,8 @@ async def send_simple(
 
 
 async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Responder) -> None:
-    """Serve one request. Errors become proxy responses; nothing propagates but I/O errors."""
+    """Serve one request. Errors become proxy responses; only I/O errors, a client's
+    ClientTimeout and cancellation propagate (the protocol layer ends the stream)."""
     request = incoming.request
     target, pipeline, kind = ctx.route(request)
     switch = incoming.websocket

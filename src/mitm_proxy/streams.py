@@ -3,6 +3,9 @@
 The HTTP layers and the relay work on a ByteStream and never know whether it is
 a plain socket, TLS on top of one, or (in tests) memory. ``write`` awaits
 ``drain()``, so a slow peer slows the writer down: that is the backpressure.
+A peer that stops reading altogether is a different matter: with a write
+timeout, a write that makes no progress for that long fails, so nothing above
+(HTTP/1.1, HTTP/2, the relay) can wait on a socket forever.
 """
 
 from __future__ import annotations
@@ -36,11 +39,17 @@ class PlainStream:
     """An asyncio reader/writer pair, with optional bytes to replay before reading."""
 
     def __init__(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter, prefix: bytes = b""
+        self,
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+        prefix: bytes = b"",
+        *,
+        write_timeout: float | None = None,
     ) -> None:
         self.reader = reader
         self.writer = writer
         self._prefix = prefix
+        self.write_timeout = write_timeout  # None: wait for the peer as long as it takes
 
     async def read(self, n: int = READ_SIZE) -> bytes:
         if self._prefix:
@@ -50,7 +59,15 @@ class PlainStream:
 
     async def write(self, data: bytes) -> None:
         self.writer.write(data)
-        await self.writer.drain()
+        try:
+            async with asyncio.timeout(self.write_timeout):
+                await self.writer.drain()
+        except TimeoutError:
+            # Half-written data leaves the stream unusable: drop the connection.
+            self.writer.transport.abort()
+            raise ConnectionResetError(
+                f"the peer stopped reading (no progress for {self.write_timeout:g}s)"
+            ) from None
 
     def write_eof(self) -> None:
         if self.writer.can_write_eof() and not self.writer.is_closing():
