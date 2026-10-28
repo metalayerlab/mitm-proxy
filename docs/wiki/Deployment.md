@@ -11,7 +11,7 @@ docker compose -f contrib/docker/compose.yml up -d
 docker compose -f contrib/docker/compose.yml logs -f
 ```
 
-Two ports are published, both on `127.0.0.1` only: the admin API (8080) and the proxy (3128). Inside the container both listeners bind `0.0.0.0` (`MITM_PROXY_LISTEN_HOST`, `MITM_PROXY_PROXY_HOST` in the compose file); the published ports decide what's reachable. To offer the proxy to other machines, publish 3128 beyond loopback **and** set `proxy.auth` (`MITM_PROXY_PROXY_AUTH_FILE`). Put a reverse proxy (Traefik) in front of the admin API for remote access.
+Two ports are published, both on `127.0.0.1` only: the admin API (8080) and the proxy (3128). Inside the container both listeners bind `0.0.0.0`: the image sets `MITM_PROXY_LISTEN_HOST` and `MITM_PROXY_PROXY_HOST` (the compose file repeats them, to be explicit), because the `127.0.0.1` default outside containers can't be reached through a published port. The published ports decide what's reachable. Because of that, the proxy's startup warning about listening on `0.0.0.0` without `proxy.auth` also appears in containers; it matters only if you publish 3128 beyond loopback. To offer the proxy to other machines, publish 3128 beyond loopback **and** set `proxy.auth` (`MITM_PROXY_PROXY_AUTH_FILE`). Put a reverse proxy (Traefik) in front of the admin API for remote access.
 Secrets go in files mounted read-only, passed as `MITM_PROXY_<KEY>_FILE`. The root CA is generated in `./state/ca/` on first start: keep that directory, it's what your clients trust.
 
 ## Kubernetes

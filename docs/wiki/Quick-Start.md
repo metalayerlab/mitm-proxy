@@ -27,12 +27,11 @@ curl http://127.0.0.1:8080/healthz      # {"status":"ok"}
 docker exec mitm-proxy mitm-proxy config   # the effective configuration
 ```
 
-Inside a container the listeners must bind to all interfaces (they default to `127.0.0.1`); the published ports above decide what's reachable. Run it like this instead:
+In a container, run it like this. The image binds both listeners to all interfaces inside the container (the host default is `127.0.0.1`), so the published ports decide what's reachable: here, loopback only.
 
 ```sh
 docker run -d --name mitm-proxy \
   -p 127.0.0.1:8080:8080 -p 127.0.0.1:3128:3128 \
-  -e MITM_PROXY_LISTEN_HOST=0.0.0.0 -e MITM_PROXY_PROXY_HOST=0.0.0.0 \
   -e MITM_PROXY_INTERCEPT_HOSTS=example.org \
   -e MITM_PROXY_PROXY_ACCESS_LOG=true \
   ghcr.io/metalayerlab/mitm-proxy:latest

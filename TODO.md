@@ -9,6 +9,7 @@ the team (and its AI assistants) should know at a glance.
 - [x] Replace every `<!-- guidance -->` comment in docs/wiki/ (a Release PR is blocked until then)
 - [ ] project-template: `scripts/gen-wiki.py` skips Typer sub-groups (`ca init`, `ca show`, `scope check` are documented by hand in CLI-Reference)
 - [ ] project-template: the Dockerfile skeleton `EXPOSE`s only 8080; the proxy also listens on 3128
+- [ ] project-template: the Docker smoke test runs the bare image, so an app whose listeners default to loopback fails it; this repo sets `MITM_PROXY_*_HOST=0.0.0.0` in the Dockerfile's runtime `ENV` (a project-side addition to the skeleton) until the template offers a hook
 - [ ] Design 0002 (Proposed): answer its open questions; the control-plane client, enrollment and managed mode are not built
 
 ## Decided against (don't re-propose without reading this first)
