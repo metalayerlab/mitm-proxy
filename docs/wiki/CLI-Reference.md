@@ -50,7 +50,8 @@ Print the version.
 
 ### Subcommands
 
-The generated list above stops at the `ca` and `scope` groups; their commands are:
+The generated list above stops at the `ca` and `scope` groups, because the template's generator
+doesn't render Typer sub-commands yet ([project-template#17](https://github.com/metalayerlab/project-template/issues/17)). Their commands are:
 
 | Command | What it does |
 |---|---|
