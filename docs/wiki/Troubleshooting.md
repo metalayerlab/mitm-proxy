@@ -50,6 +50,8 @@ Turn on the access log (`proxy.access_log: true`) and read the end of each flow 
 
 `-` means that stage didn't happen (for example, `connect=-` on a response a middleware sent itself, `outcome=local:<name>`).
 
+For the trend rather than one request, the same stages are histograms on `/metrics`: `mitm_proxy_origin_ttfb_seconds` going up means the origin got slower; `mitm_proxy_upstream_connect_seconds{reused="false"}` going up points at the network or the origin's TLS; `mitm_proxy_middleware_duration_seconds` by `middleware` finds a slow one. Example queries are in [HTTP API Reference](HTTP-API-Reference), under `GET /metrics`.
+
 In a browser, set `proxy.server_timing: true` and open devtools (Network → a request → Timing): the same breakdown appears under Server Timing as `mitm-connect`, `mitm-origin`, `mitm-mw` and `mitm-proxy`, and `mitm-local` names the middleware that answered a request itself. These show up even for responses no middleware ran on. See [In-Depth Configuration](In-Depth-Configuration).
 
 ### A flow ends with `outcome=aborted`

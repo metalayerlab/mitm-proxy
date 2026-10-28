@@ -1,13 +1,19 @@
 """Prometheus text exposition, for ``GET /metrics``.
 
-Only counters and gauges, so the format is written here rather than taking a
-dependency. Every label has a small, fixed set of values: the intercepted host is
-never a label (it would make the series count unbounded).
+Counters, gauges and classic histograms: few enough that the format is written
+here rather than taking a dependency. Every label has a small, fixed set of
+values: the intercepted host is never a label (it would make the series count
+unbounded).
 """
 
 from __future__ import annotations
 
+import bisect
 from collections.abc import Callable, Mapping
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from mitm_proxy.http.flow import Flow
 
 LabelValues = tuple[str, ...]
 
@@ -71,6 +77,62 @@ class Gauge(Metric):
         return self.read() if self.read is not None else self.values
 
 
+# Network-scale times (Prometheus's defaults, plus 30 s and 60 s), and middleware hook times
+# (100 µs up to the default hook timeout). Fixed: changing them breaks dashboards (0007).
+NETWORK_BUCKETS = (0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30, 60)
+MIDDLEWARE_BUCKETS = (
+    0.0001,
+    0.00025,
+    0.0005,
+    0.001,
+    0.0025,
+    0.005,
+    0.01,
+    0.025,
+    0.05,
+    0.1,
+    0.25,
+    0.5,
+    1,
+    2.5,
+    5,
+)
+
+
+def _le(bound: float) -> str:
+    return repr(float(bound))
+
+
+class Histogram(Metric):
+    """A classic histogram: cumulative buckets, a sum and a count, per label set."""
+
+    def __init__(
+        self, name: str, help: str, buckets: tuple[float, ...], labels: tuple[str, ...] = ()
+    ) -> None:
+        super().__init__(name, help, "histogram", labels)
+        self.buckets = tuple(sorted(buckets))
+        # per label set: counts per bucket (the last is +Inf, not cumulative), sum, count
+        self.series: dict[LabelValues, tuple[list[int], list[float]]] = {}
+
+    def observe(self, value: float, *values: str) -> None:
+        counts, totals = self.series.setdefault(values, ([0] * (len(self.buckets) + 1), [0.0]))
+        counts[bisect.bisect_left(self.buckets, value)] += 1  # le is inclusive
+        totals[0] += value
+
+    def render(self) -> list[str]:
+        lines = [f"# HELP {self.name} {self.help}", f"# TYPE {self.name} {self.kind}"]
+        labels = (*self.labels, "le")
+        for values, (counts, totals) in sorted(self.series.items()):
+            running = 0
+            bounds = [*map(_le, self.buckets), "+Inf"]
+            for bound, count in zip(bounds, counts, strict=True):
+                running += count
+                lines.append(_format(f"{self.name}_bucket", labels, (*values, bound), running))
+            lines.append(_format(f"{self.name}_sum", self.labels, values, totals[0]))
+            lines.append(_format(f"{self.name}_count", self.labels, values, running))
+        return lines
+
+
 class Metrics:
     """Every metric the proxy exports."""
 
@@ -122,6 +184,30 @@ class Metrics:
             "When a certificate expires (Unix time), by kind.",
             ("kind",),
         )
+        # Intercepted HTTP flows, observed when each ends (0007).
+        self.flow_duration = Histogram(
+            "mitm_proxy_flow_duration_seconds",
+            "Intercepted HTTP flows, from the request arriving to the last byte sent, by outcome.",
+            NETWORK_BUCKETS,
+            ("outcome",),
+        )
+        self.upstream_connect = Histogram(
+            "mitm_proxy_upstream_connect_seconds",
+            "Waiting for an upstream connection, by whether a pooled one was reused.",
+            NETWORK_BUCKETS,
+            ("reused",),
+        )
+        self.origin_ttfb = Histogram(
+            "mitm_proxy_origin_ttfb_seconds",
+            "The origin's share: from the request being sent to its response headers.",
+            NETWORK_BUCKETS,
+        )
+        self.middleware_duration = Histogram(
+            "mitm_proxy_middleware_duration_seconds",
+            "Time each middleware spent in its hooks for one flow, on_done included.",
+            MIDDLEWARE_BUCKETS,
+            ("middleware",),
+        )
 
     def all(self) -> list[Metric]:
         return [
@@ -135,7 +221,23 @@ class Metrics:
             self.upstream_connections,
             self.config_applies,
             self.certificate_expiry,
+            self.flow_duration,
+            self.upstream_connect,
+            self.origin_ttfb,
+            self.middleware_duration,
         ]
+
+    def observe_flow(self, flow: Flow) -> None:
+        """The histograms' share of one ended, intercepted HTTP flow (0007)."""
+        t, outcome = flow.timings, flow.outcome
+        if t.total is not None and outcome is not None:
+            self.flow_duration.observe(t.total, outcome.kind)
+        if t.connect is not None:
+            self.upstream_connect.observe(t.connect, "true" if t.connection_reused else "false")
+        if t.ttfb is not None:
+            self.origin_ttfb.observe(t.ttfb)
+        for name, seconds in t.middleware.items():
+            self.middleware_duration.observe(seconds, name)
 
     def render(self) -> str:
         lines: list[str] = []

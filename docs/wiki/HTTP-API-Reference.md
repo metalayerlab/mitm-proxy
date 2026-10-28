@@ -59,6 +59,30 @@ Prometheus text format (`text/plain; version=0.0.4`). No metric is labelled with
 | `mitm_proxy_upstream_connections` | gauge | `protocol` |
 | `mitm_proxy_config_applies_total` | counter | `result` |
 | `mitm_proxy_certificate_expiry_timestamp_seconds` | gauge | `kind`: `ca` |
+| `mitm_proxy_flow_duration_seconds` | histogram | `outcome`: `origin`, `local`, `denied`, `error`, `aborted` |
+| `mitm_proxy_upstream_connect_seconds` | histogram | `reused`: `true`, `false` |
+| `mitm_proxy_origin_ttfb_seconds` | histogram | |
+| `mitm_proxy_middleware_duration_seconds` | histogram | `middleware` |
+
+The four histograms cover intercepted HTTP flows only (not WebSockets, not relayed traffic), observed when each flow ends, and are always on. They measure the same things as the access log's `total`, `connect`, `ttfb` and `mw` (see [In-Depth Configuration](In-Depth-Configuration#the-access-log)). The middleware histogram is the one place that includes `on_done` time. Buckets are fixed: 5 ms to 60 s for the first three, 100 µs to 5 s for middleware.
+
+Some queries:
+
+```promql
+# The origin's p99, over 5 minutes
+histogram_quantile(0.99, sum by (le) (rate(mitm_proxy_origin_ttfb_seconds_bucket[5m])))
+
+# p95 for flows answered by the origin (local answers and aborted downloads excluded)
+histogram_quantile(0.95, sum by (le) (rate(mitm_proxy_flow_duration_seconds_bucket{outcome="origin"}[5m])))
+
+# New upstream connections per second, and how long they take on average
+rate(mitm_proxy_upstream_connect_seconds_count{reused="false"}[5m])
+rate(mitm_proxy_upstream_connect_seconds_sum{reused="false"}[5m])
+  / rate(mitm_proxy_upstream_connect_seconds_count{reused="false"}[5m])
+
+# The slowest middleware, by p99
+histogram_quantile(0.99, sum by (le, middleware) (rate(mitm_proxy_middleware_duration_seconds_bucket[5m])))
+```
 
 ### `GET /ca.pem` and `GET /ca.der`
 

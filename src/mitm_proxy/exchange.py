@@ -272,8 +272,14 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
         _access_log(ctx, flow, tally, outcome)
         # After the log line, so the log never waits on middleware. On cancellation this
         # still runs (each hook bounded by the hook timeout); the cancellation then resumes.
-        if run is not None and run.applies:
-            await run.run_done()
+        try:
+            if run is not None and run.applies:
+                await run.run_done()
+        finally:
+            # After on_done, so each middleware's time includes it; WebSockets are long-lived
+            # by design and relayed flows have no stages, so neither is observed (0007).
+            if switch is None and ctx.intercepts(request):
+                ctx.metrics.observe_flow(flow)
 
 
 def _access_log(ctx: ExchangeContext, flow: Flow, tally: _Tally, outcome: Outcome) -> None:
