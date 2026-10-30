@@ -38,11 +38,15 @@ def bind(host: str, port: int) -> socket.socket:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)
         family, kind, proto, _, address = infos[0]
         sock = socket.socket(family, kind, proto)
+    except OSError as e:
+        raise StartupError(f"cannot listen on {host}:{port}: {e.strerror or e}") from e
+    try:
         sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         sock.bind(address)
         sock.listen(128)
         sock.setblocking(False)
     except OSError as e:
+        sock.close()
         raise StartupError(f"cannot listen on {host}:{port}: {e.strerror or e}") from e
     return sock
 
