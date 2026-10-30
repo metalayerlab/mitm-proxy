@@ -5,6 +5,8 @@ repository (Claude Code, Codex, Copilot agent, Cursor, Gemini CLI). For a chat w
 with [Context for a chat assistant](#context-for-a-chat-assistant).
 
 Replace `<...>`. Each prompt ends at a point where a human looks before work continues: keep that stop.
+Start each task in a new session, and point to files or a failing check by name rather than pasting them:
+the whole conversation is sent again with every turn.
 
 ## 1. First build-out from the skeleton
 
@@ -20,7 +22,8 @@ constraints: performance, deployment target, integrations>.
 Step 1, and stop after it: write docs/design/0001-initial-design.md from the
 template, and list it in docs/design/README.md. Cover the components, data flow, configuration settings (names,
 types, defaults, which are secrets), the CLI commands and HTTP endpoints, error
-handling, and what is explicitly out of scope. List open questions for me.
+handling, and what is explicitly out of scope. List open questions for me,
+each with your recommendation.
 Don't write code yet.
 ```
 

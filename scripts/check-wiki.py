@@ -217,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--design", type=Path, default=Path("docs/design"))
     parser.add_argument("--strict", action="store_true", help="fail on unwritten guidance")
     parser.add_argument("--docs-touched", metavar="BASE", help="git ref to diff against")
+    parser.add_argument("--verbose", action="store_true", help="list warnings, not only count them")
     args = parser.parse_args(argv)
 
     standard_file = args.wiki / ".standard.toml"
@@ -234,14 +235,17 @@ def main(argv: list[str] | None = None) -> int:
         check_design_index(args.design, report)
         check_context_budget(standard, report)
 
-    for warning in report.warnings:
-        print(f"warning: {warning}")
+    # Quiet on a pass: an assistant reads this output on every run (design record 0007).
+    if args.verbose:
+        for warning in report.warnings:
+            print(f"warning: {warning}")
     for error in report.errors:
         print(f"error: {error}")
+    hint = "" if args.verbose or not report.warnings else "; --verbose lists them"
     if report.errors:
-        print(f"\n{len(report.errors)} error(s), {len(report.warnings)} warning(s)")
+        print(f"\n{len(report.errors)} error(s), {len(report.warnings)} warning(s){hint}")
         return 1
-    print(f"wiki OK ({len(report.warnings)} warning(s))")
+    print(f"wiki OK ({len(report.warnings)} warning(s){hint})")
     return 0
 
 

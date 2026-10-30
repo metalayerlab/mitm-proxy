@@ -52,11 +52,16 @@ def cli() -> str:
     # Typer vendors click, so duck-type the command objects instead of
     # importing click's classes.
     root: Any = typer.main.get_command(app)
-    commands: dict[str, Any] = getattr(root, "commands", {})
     out: list[str] = []
-    for name in sorted(commands):
-        cmd = commands[name]
+    for name, cmd in _leaves(root, ""):
         out += [f"### `mitm-proxy {name}`", "", (cmd.help or "").strip(), ""]
+        arguments = [p for p in cmd.params if getattr(p, "param_type_name", "") == "argument"]
+        if arguments:
+            out += ["| Argument | Description |", "|---|---|"]
+            for arg in arguments:
+                metavar = arg.metavar or arg.name.upper()
+                out.append(f"| `{metavar}` | {_cell(getattr(arg, 'help', '') or '')} |")
+            out.append("")
         options = [p for p in cmd.params if getattr(p, "param_type_name", "") == "option"]
         if options:
             out += ["| Option | Environment variable | Description |", "|---|---|---|"]
@@ -66,6 +71,17 @@ def cli() -> str:
                 out.append(f"| {flags} | {env} | {_cell(opt.help or '')} |")
             out.append("")
     return "\n".join(out).rstrip()
+
+
+def _leaves(group: Any, prefix: str) -> list[tuple[str, Any]]:
+    """Every runnable command under a group, sub-apps (`app.add_typer`) included."""
+    leaves = []
+    for name, cmd in sorted(getattr(group, "commands", {}).items()):
+        if hasattr(cmd, "commands"):
+            leaves += _leaves(cmd, f"{prefix}{name} ")
+        else:
+            leaves.append((f"{prefix}{name}", cmd))
+    return leaves
 
 
 def http_api() -> str:

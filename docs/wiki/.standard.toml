@@ -55,10 +55,10 @@ headings = []
 headings = []
 
 # What AI assistants load every session, in characters (~4 per token). Template-owned:
-# raising a budget is a change to project-template (its design record 0002), never local.
+# raising a budget is a change to project-template (its design records 0002 and 0006), never local.
 # Keep rules in AGENTS.md and reasons in the wiki.
 [context_budget]
-"AGENTS.md" = 8000
+"AGENTS.md" = 9000
 "CLAUDE.md" = 600
 "GEMINI.md" = 300
 ".cursor/rules/project.mdc" = 300
