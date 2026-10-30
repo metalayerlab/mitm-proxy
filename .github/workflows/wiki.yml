@@ -35,13 +35,9 @@ jobs:
             python3 scripts/check-wiki.py
           fi
 
+      # The image, globs and config live in the script, so a local run matches this one.
       - name: Markdown lint
-        uses: DavidAnson/markdownlint-cli2-action@696eb3f2509270d7b882d2aa68347bc676e7af34 # v25.0.0
-        with:
-          globs: |
-            docs/wiki/*.md
-            *.md
-            !CHANGELOG.md
+        run: scripts/check-docs-secrets.sh docs
 
   docs-touched:
     name: Docs updated with the code
