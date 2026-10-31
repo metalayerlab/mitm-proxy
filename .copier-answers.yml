@@ -11,7 +11,8 @@ contrib:
 dependabot_automerge: 'off'
 description: Async Python MITM proxy with a self-signed CA — HTTP/1.1 & HTTP/2, pluggable
     middleware for inspecting and rewriting traffic in flight.
-extra_ports: []
+extra_ports:
+- 3128
 github_owner: metalayerlab
 health_path: /healthz
 image_extras: []

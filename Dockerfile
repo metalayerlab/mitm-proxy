@@ -89,7 +89,7 @@ USER 1000:1000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
     CMD ["python", "-c", "import os, urllib.request; urllib.request.urlopen(f\"http://127.0.0.1:{os.environ.get('MITM_PROXY_LISTEN_PORT', '8080')}/healthz\", timeout=4)"]
 
-EXPOSE 8080
+EXPOSE 8080 3128
 VOLUME ["/var/lib/mitm-proxy"]
 
 ENTRYPOINT ["mitm-proxy"]

@@ -72,17 +72,6 @@ Print the version.
 
 `mitm-proxy scope check` also uses 1: the host would be tunnelled, not intercepted.
 
-### Subcommands
-
-The generated list above stops at the `ca` and `scope` groups, because the template's generator
-doesn't render Typer sub-commands yet ([project-template#17](https://github.com/metalayerlab/project-template/issues/17)). Their commands are:
-
-| Command | What it does |
-|---|---|
-| `mitm-proxy ca init [-c FILE] [--force]` | Create the root CA in `<state_dir>/ca/` and print its SHA-256 fingerprint. Refuses to replace an existing one without `--force` (clients must then trust the new one). Refuses when `ca.cert`/`ca.key` are set. |
-| `mitm-proxy ca show [-c FILE] [--der]` | Write the root certificate to stdout (PEM, or DER with `--der`) and its fingerprint to stderr. Exit 2 if there's no CA yet. |
-| `mitm-proxy scope check HOST [-c FILE]` | Say whether HOST would be intercepted, and which `intercept.hosts` entry matched. Exit 0: intercepted, 1: tunnelled untouched, 2: not a valid host. |
-
 ### Examples
 
 ```sh
