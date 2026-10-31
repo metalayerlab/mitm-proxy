@@ -1,6 +1,6 @@
 # Written by Copier: never edit by hand. `copier update` reads it to know
 # which template version and answers this project was made from.
-_commit: v0.1.3
+_commit: v0.1.17
 _src_path: gh:metalayerlab/project-template
 code_owners: '@metalayerlab/maintainers'
 container_image: true
@@ -11,8 +11,10 @@ contrib:
 dependabot_automerge: 'off'
 description: Async Python MITM proxy with a self-signed CA — HTTP/1.1 & HTTP/2, pluggable
     middleware for inspecting and rewriting traffic in flight.
+extra_ports: []
 github_owner: metalayerlab
 health_path: /healthz
+image_extras: []
 kind: service
 language: python
 license: Unlicense

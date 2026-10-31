@@ -2,9 +2,22 @@
 # stages (extra binaries, assets) go between the builder and the runtime stage.
 
 # ============================================================
-# Stage 1: builder (dependencies, then the package, into /opt/venv)
+# Stage 1: builder
 # ============================================================
 FROM python:3.13-slim AS builder
+
+# The `build:` packages in contrib/system-packages.txt (project-owned): compilers
+# and headers for dependencies that build from source. None listed: nothing runs
+# hadolint ignore=DL3008,SC2046
+RUN --mount=type=bind,source=contrib/system-packages.txt,target=/tmp/system-packages.txt \
+    set -- $(sed -n 's/^build://p' /tmp/system-packages.txt); \
+    if [ $# -gt 0 ]; then \
+        apt-get update \
+        && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@" \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
+# Dependencies, then the package, into /opt/venv
 
 COPY --from=ghcr.io/astral-sh/uv:0.13.6 /uv /bin/uv
 
@@ -42,16 +55,20 @@ LABEL org.opencontainers.image.title="mitm-proxy" \
       org.opencontainers.image.revision="${REVISION}" \
       org.opencontainers.image.created="${CREATED}"
 
+# The `runtime:` packages in contrib/system-packages.txt: libraries and tools the
+# project needs at run time. None listed: nothing runs
+# hadolint ignore=DL3008,SC2046
+RUN --mount=type=bind,source=contrib/system-packages.txt,target=/tmp/system-packages.txt \
+    set -- $(sed -n 's/^runtime://p' /tmp/system-packages.txt); \
+    if [ $# -gt 0 ]; then \
+        apt-get update \
+        && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends "$@" \
+        && rm -rf /var/lib/apt/lists/*; \
+    fi
+
 COPY --from=builder /opt/venv /opt/venv
-# Both listeners default to 127.0.0.1 (design 0001), which a published port can't
-# reach: inside the container bind all interfaces, and let the published ports
-# decide exposure. A config file or -e still overrides these.
-# Project-side addition to the template skeleton, so the template's smoke test
-# can reach /healthz; remove it when https://github.com/metalayerlab/project-template/issues/17 is fixed.
 ENV PATH="/opt/venv/bin:$PATH" \
-    PYTHONUNBUFFERED=1 \
-    MITM_PROXY_LISTEN_HOST=0.0.0.0 \
-    MITM_PROXY_PROXY_HOST=0.0.0.0
+    PYTHONUNBUFFERED=1
 
 RUN useradd --system --create-home --shell /usr/sbin/nologin --uid 1000 mitm-proxy
 
@@ -60,6 +77,12 @@ RUN useradd --system --create-home --shell /usr/sbin/nologin --uid 1000 mitm-pro
 RUN mkdir -p /etc/mitm-proxy /var/lib/mitm-proxy \
     && chown mitm-proxy:mitm-proxy /var/lib/mitm-proxy
 COPY contrib/mitm-proxy.example.yaml /usr/share/mitm-proxy/config.example.yaml
+
+# Bind every interface whatever the app's default: in a container, the
+# published ports decide what is reachable, and loopback would be unreachable
+# The proxy listener too (design 0001): project-side addition to the template line above
+ENV MITM_PROXY_LISTEN_HOST=0.0.0.0 \
+    MITM_PROXY_PROXY_HOST=0.0.0.0
 
 USER 1000:1000
 

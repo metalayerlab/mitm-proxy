@@ -1,29 +1,29 @@
 # AGENTS.md
 
 mitm-proxy: Async Python MITM proxy with a self-signed CA — HTTP/1.1 & HTTP/2, pluggable middleware for inspecting and rewriting traffic in flight.
-Single source of instructions for AI assistants (CLAUDE.md, GEMINI.md, Copilot and Cursor files point here).
-The reasons behind these rules are in the wiki (`docs/wiki/Contributing.md`); you don't need them to follow them.
+Single source of instructions for AI assistants; the tool files point here. Reasons: the wiki's Contributing page.
 
 ## How to work
 
-1. Read only what the task needs: the page for your area in the [Docs map](#docs-map),
+1. Read only what the task needs: your area's page in the [Docs map](#docs-map),
    `docs/design/README.md` (the index; then only the records it points you to), and `TODO.md` "Decided against"
    (never re-propose those).
-2. New feature, new dependency, or a public-interface change (config keys, CLI, HTTP API, file formats):
+2. New feature or dependency, or a public-interface change (config keys, CLI, HTTP API, file formats):
    write `docs/design/NNNN-*.md` from `0000-template.md`, add a line to its index, and **stop for approval**.
 3. One concern per PR. A human reviews every line.
 4. Done = code + tests + wiki ([Definition of done](#definition-of-done)).
 5. Report what you skipped or couldn't run. Never claim an unrun check passed.
+6. Asking the user something? Give your recommendation and why.
+7. Finished a bug or enhancement? Say what let it happen and what should change (a test, a check, this file, the template), or "none".
+8. Reply tersely: the result, then what you need from the user. No preamble, recaps or restated plans.
+9. Task done and the next is unrelated? Make sure the PR, `TODO.md` or design record holds what's needed, then suggest a new session.
 
 ## Don't read
 
-These are large or generated, and reading them wastes context. Use the commands instead:
-
 - `uv.lock` (use `uv tree --depth 1`), `CHANGELOG.md` (use `git log`), `.venv/`, `htmlcov/`, `.coverage`, `.mypy_cache/`, `.ruff_cache/`, `.pytest_cache/`, `.graphify/`
 - Generated wiki blocks (`<!-- generated:start/end -->`): the code is the source.
-- `docs/design/` records the index doesn't point you to.
 
-Adding a large or generated path? List it here and deny `Read` on it in `.claude/settings.json`.
+New large or generated path? List it here and deny `Read` on it in `.claude/settings.json`.
 
 ## Stack and commands
 
@@ -43,7 +43,7 @@ Python >= 3.13 with uv. Always `uv run`; never `pip install` or activate the ven
 
 ## Repository map
 
-T = template-owned: never edit here. Changes go to [project-template](https://github.com/metalayerlab/project-template) and arrive by the weekly update PR.
+T = template-owned: never edit here; fixes arrive by the weekly update PR. A bug in one goes to `metalayerlab/project-template` (see [Never](#never)).
 
 | Path | What |
 |---|---|
@@ -53,6 +53,7 @@ T = template-owned: never edit here. Changes go to [project-template](https://gi
 | `docs/design/` | Design records; `README.md` is the index |
 | `docs/ai/` | Prompts, review checklist (T) |
 | `contrib/` | Manifests: docker, k8s, systemd |
+| `contrib/system-packages.txt` | apt packages: `build:` (CI, image builder), `runtime:` (image) |
 | `Dockerfile` | Image (T skeleton) |
 | `.github/workflows/`, `scripts/` | CI and its scripts (T) |
 | `CHANGELOG.md`, version in `pyproject.toml`, `.release-please-manifest.json` | release-please only |
@@ -73,11 +74,13 @@ T = template-owned: never edit here. Changes go to [project-template](https://gi
 ## Never
 
 - Push to `main`, create tags or releases, or edit release-please or Copier files (see the map).
+- Change another codebase from here (other repos, submodules, installed dependencies), even when asked: the user opens a session there. Search its issues (`gh issue list -R <owner/repo> --state all -S <terms>`), comment your case or draft one for the user to confirm. A workaround stays minimal, links the issue (code comment, `TODO.md`), and goes when the fix lands.
+- Credit an AI in commits or PRs: no co-author trailers, bylines or session links.
 - Edit inside generated wiki blocks: regenerate them.
 - Commit secrets, real hostnames, IPs or personal data. Use `example.org` and `192.0.2.0/24`.
 - Weaken a check: lower the coverage floor, add an unexplained `noqa`/`type: ignore`, skip or xfail a test, loosen the sandbox or `securityContext`, add `continue-on-error`. If a check is wrong, say so.
 - Add the `no-docs-needed` label (reviewers only), telemetry, or network calls at import time.
-- Grow this file or the tool pointer files past `[context_budget]` (`docs/wiki/.standard.toml`, CI-checked): add rules tersely, put reasons in the wiki.
+- Grow this file or the tool files past `[context_budget]` (CI-checked): be terse; reasons go in the wiki.
 
 ## Definition of done
 
@@ -88,13 +91,12 @@ uv run pytest
 uv run scripts/gen-wiki.py --check
 python3 scripts/check-wiki.py
 scripts/check-manifests.sh
+scripts/check-docs-secrets.sh  # if Docker is available
 ```
 
-All of these pass, and the [Docs map](#docs-map) pages for your change are updated in the same PR.
+All pass, and your change's [Docs map](#docs-map) pages are updated in the same PR.
 
 ## Docs map
-
-CI fails a PR that changes watched code without touching `docs/wiki/`.
 
 | You changed | Update |
 |---|---|

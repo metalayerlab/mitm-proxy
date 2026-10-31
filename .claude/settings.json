@@ -1,5 +1,6 @@
 {
   "$schema": "https://json.schemastore.org/claude-code-settings.json",
+  "attribution": {"commit": "", "pr": "", "sessionUrl": false},
   "permissions": {
     "allow": [
       "Bash(uv sync:*)",
@@ -10,6 +11,7 @@
       "Bash(uv run mitm-proxy:*)",
       "Bash(scripts/check-manifests.sh)",
       "Bash(python3 scripts/check-wiki.py:*)",
+      "Bash(scripts/check-docs-secrets.sh:*)",
       "Bash(git status:*)",
       "Bash(git diff:*)",
       "Bash(git log:*)"
@@ -18,9 +20,23 @@
       "Edit(CHANGELOG.md)",
       "Edit(.release-please-manifest.json)",
       "Edit(.copier-answers.yml)",
-      "Bash(git push:*)",
+      "Bash(git push * main)",
+      "Bash(git push * main *)",
+      "Bash(git push *:main)",
+      "Bash(git push *:main *)",
+      "Bash(git push *refs/heads/main)",
+      "Bash(git push *refs/heads/main *)",
+      "Bash(git push *--force*)",
+      "Bash(git push * -f*)",
+      "Bash(git push *+*)",
+      "Bash(git push *--mirror*)",
+      "Bash(git push *--tags*)",
+      "Bash(git push *--follow-tags*)",
       "Bash(git tag:*)",
       "Bash(gh release:*)",
+      "Bash(gh pr create *-R *)",
+      "Bash(gh pr create *--repo*)",
+      "Edit(./.venv/**)",
       "Read(./uv.lock)",
       "Read(./.venv/**)",
       "Read(./htmlcov/**)",
@@ -32,6 +48,14 @@
       "Read(.env)",
       "Read(.env.*)",
       "Read(secrets/**)"
+    ]
+  },
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Edit|MultiEdit|Write|NotebookEdit",
+        "hooks": [{"type": "command", "command": "python3 \"$CLAUDE_PROJECT_DIR/scripts/repo-boundary.py\""}]
+      }
     ]
   }
 }
