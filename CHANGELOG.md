@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.1.1](https://github.com/metalayerlab/mitm-proxy/compare/v0.1.0...v0.1.1) (2026-10-31)
+
+
+### 📚 Documentation
+
+* link the project-template issue for this project's template workarounds ([3ef1b36](https://github.com/metalayerlab/mitm-proxy/commit/3ef1b36aa5b9e34d5cd1482b25c7cf30ccd370a7))
+* link the project-template issue for this project's template workarounds ([24234c6](https://github.com/metalayerlab/mitm-proxy/commit/24234c629155a11e7df40f3a59d5e722e0b4d643))
+
 ## 0.1.0 (2026-10-28)
 
 
