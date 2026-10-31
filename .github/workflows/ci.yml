@@ -27,10 +27,9 @@ jobs:
         with:
           fetch-depth: 0
       # Allow-list false positives in .gitleaks.toml, never by disabling the job.
+      # The image and arguments live in the script, so a local run matches this one.
       - name: gitleaks
-        run: |
-          docker run --rm -v "$PWD:/repo" -w /repo ghcr.io/gitleaks/gitleaks:v8.30.1 \
-            git --redact --verbose --config .gitleaks.toml .
+        run: scripts/check-docs-secrets.sh secrets
 
   personal-data:
     name: Personal data guard
@@ -57,6 +56,15 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
           enable-cache: true
+
+      # The `build:` packages in contrib/system-packages.txt (project-owned), for
+      # dependencies that build from source. None listed: nothing is installed.
+      - name: System packages
+        run: |
+          if grep -q '^build:.*[^[:space:]]' contrib/system-packages.txt; then
+            sudo apt-get update
+            sed -n 's/^build://p' contrib/system-packages.txt | xargs sudo apt-get install -y --no-install-recommends
+          fi
 
       - name: Install (from the lock file)
         run: uv sync --locked

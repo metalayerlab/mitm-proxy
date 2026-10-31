@@ -25,4 +25,4 @@ What becomes easier or harder. Migration, rollout and rollback. Which wiki pages
 
 ## Open questions
 
-What the reviewer must answer before this is approved.
+What the reviewer must answer before this is approved, each with the author's recommendation and why.

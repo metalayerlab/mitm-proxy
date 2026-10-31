@@ -7,10 +7,7 @@ the team (and its AI assistants) should know at a glance.
 
 - [x] Write docs/design/0001-initial-design.md (docs/ai/prompts.md, prompt 1)
 - [x] Replace every `<!-- guidance -->` comment in docs/wiki/ (a Release PR is blocked until then)
-- [ ] project-template: `scripts/gen-wiki.py` skips Typer sub-groups (`ca init`, `ca show`, `scope check` are documented by hand in CLI-Reference) ([#17](https://github.com/metalayerlab/project-template/issues/17), item 1)
-- [ ] project-template: the Dockerfile skeleton `EXPOSE`s only 8080; the proxy also listens on 3128 ([#17](https://github.com/metalayerlab/project-template/issues/17), item 2)
-- [ ] project-template: the Docker smoke test runs the bare image, so an app whose listeners default to loopback fails it; this repo sets `MITM_PROXY_*_HOST=0.0.0.0` in the Dockerfile's runtime `ENV` (a project-side addition to the skeleton) until the template offers a hook ([#17](https://github.com/metalayerlab/project-template/issues/17), item 3)
-- [ ] project-template: the Definition of done doesn't run markdownlint or gitleaks, so both failed only in CI on PR #1 ([#17](https://github.com/metalayerlab/project-template/issues/17), item 4)
+- [ ] project-template: the Dockerfile skeleton binds only the main listener (`MITM_PROXY_LISTEN_HOST=0.0.0.0`); this repo adds `MITM_PROXY_PROXY_HOST=0.0.0.0` for the `extra_ports` listener, a project-side addition to the skeleton ([#17](https://github.com/metalayerlab/project-template/issues/17), item 3)
 - [ ] Design 0002 (Proposed): answer its open questions; the control-plane client, enrollment and managed mode are not built
 
 ## Decided against (don't re-propose without reading this first)

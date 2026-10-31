@@ -7,9 +7,23 @@
 Generated from the code: don't edit, run `uv run scripts/gen-wiki.py`.
 
 <!-- generated:start cli -->
-### `mitm-proxy ca`
+### `mitm-proxy ca init`
 
-The root CA that signs intercepted hosts' certificates.
+Create the root CA in <state_dir>/ca/ and print its SHA-256 fingerprint.
+
+| Option | Environment variable | Description |
+|---|---|---|
+| `--config`, `-c` | `MITM_PROXY_CONFIG` | Config file (default /etc/mitm-proxy/config.yaml; missing is fine). |
+| `--force` |  | Replace an existing CA. Clients must trust the new one. |
+
+### `mitm-proxy ca show`
+
+Write the root CA certificate to stdout, to install on clients.
+
+| Option | Environment variable | Description |
+|---|---|---|
+| `--config`, `-c` | `MITM_PROXY_CONFIG` | Config file (default /etc/mitm-proxy/config.yaml; missing is fine). |
+| `--der` |  | DER instead of PEM. |
 
 ### `mitm-proxy config`
 
@@ -19,9 +33,19 @@ Print the effective configuration and where each value came from. Secrets are ma
 |---|---|---|
 | `--config`, `-c` | `MITM_PROXY_CONFIG` | Config file (default /etc/mitm-proxy/config.yaml; missing is fine). |
 
-### `mitm-proxy scope`
+### `mitm-proxy scope check`
 
-The intercept allowlist.
+Say whether HOST would be intercepted, and which intercept.hosts entry matched.
+
+Exit code 0: intercepted. 1: tunnelled untouched. 2: an error.
+
+| Argument | Description |
+|---|---|
+| `HOST` | A hostname or IP address. |
+
+| Option | Environment variable | Description |
+|---|---|---|
+| `--config`, `-c` | `MITM_PROXY_CONFIG` | Config file (default /etc/mitm-proxy/config.yaml; missing is fine). |
 
 ### `mitm-proxy serve`
 
@@ -47,17 +71,6 @@ Print the version.
 | 2 | Bad usage or invalid configuration |
 
 `mitm-proxy scope check` also uses 1: the host would be tunnelled, not intercepted.
-
-### Subcommands
-
-The generated list above stops at the `ca` and `scope` groups, because the template's generator
-doesn't render Typer sub-commands yet ([project-template#17](https://github.com/metalayerlab/project-template/issues/17)). Their commands are:
-
-| Command | What it does |
-|---|---|
-| `mitm-proxy ca init [-c FILE] [--force]` | Create the root CA in `<state_dir>/ca/` and print its SHA-256 fingerprint. Refuses to replace an existing one without `--force` (clients must then trust the new one). Refuses when `ca.cert`/`ca.key` are set. |
-| `mitm-proxy ca show [-c FILE] [--der]` | Write the root certificate to stdout (PEM, or DER with `--der`) and its fingerprint to stderr. Exit 2 if there's no CA yet. |
-| `mitm-proxy scope check HOST [-c FILE]` | Say whether HOST would be intercepted, and which `intercept.hosts` entry matched. Exit 0: intercepted, 1: tunnelled untouched, 2: not a valid host. |
 
 ### Examples
 

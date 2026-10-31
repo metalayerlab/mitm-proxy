@@ -5,6 +5,8 @@ repository (Claude Code, Codex, Copilot agent, Cursor, Gemini CLI). For a chat w
 with [Context for a chat assistant](#context-for-a-chat-assistant).
 
 Replace `<...>`. Each prompt ends at a point where a human looks before work continues: keep that stop.
+Start each task in a new session, and point to files or a failing check by name rather than pasting them:
+the whole conversation is sent again with every turn.
 
 ## 1. First build-out from the skeleton
 
@@ -20,7 +22,8 @@ constraints: performance, deployment target, integrations>.
 Step 1, and stop after it: write docs/design/0001-initial-design.md from the
 template, and list it in docs/design/README.md. Cover the components, data flow, configuration settings (names,
 types, defaults, which are secrets), the CLI commands and HTTP endpoints, error
-handling, and what is explicitly out of scope. List open questions for me.
+handling, and what is explicitly out of scope. List open questions for me,
+each with your recommendation.
 Don't write code yet.
 ```
 
@@ -73,6 +76,46 @@ Review the diff of this branch against main using docs/ai/review-checklist.md.
 Report only concrete problems, each with file:line and why it matters, most
 severe first. Then check the docs map in AGENTS.md: is every wiki page that
 should have changed actually changed?
+```
+
+## 6. Work through the open issues
+
+For an assistant that can run sub-agents (Claude Code, Codex). It merges bug fixes on its own, so use it
+only where the maintainers allow that, and where the `main` ruleset lets an agent merge a green PR. Anything
+else stops at a PR for a human.
+
+```text
+Read AGENTS.md. List the open issues: gh issue list --state open. Skip any
+with an open PR that closes it. For each of the rest, start one sub-agent in
+its own git worktree, on a branch made with
+git switch -c dev/issue-<n> --no-track origin/main. Give each this brief:
+
+  Read AGENTS.md, then issue <n> with its comments (gh issue view <n>
+  --comments), and the code and design records it touches.
+  1. Assess it. Duplicate, already fixed, not reproducible or missing
+     information: comment with the evidence (a commit, a test, the question)
+     and stop. Don't close it.
+  2. A bug: first write a test that fails because of it, and run it. If it
+     passes, the bug isn't there: comment with the test and stop. If it
+     fails, comment that it is confirmed and what the cause is.
+  3. Needs a design record (AGENTS.md "How to work"), or changes a public
+     interface: write the record, open a PR for it, comment on the issue
+     with the link, and stop.
+  4. Otherwise fix it with the smallest change, under "One concern per PR",
+     with the wiki pages the docs map names. Run the Definition of done and
+     fix failures without weakening any check. Review the diff against
+     docs/ai/review-checklist.md and fix what it finds.
+  5. Push, open a PR with "Fixes #<n>" and the root cause in the body, then
+     wait for CI (gh pr checks --watch). Fix any failure the same way.
+  6. A bug fix with every check green: update the branch onto main, wait
+     for CI again, then gh pr merge --squash --delete-branch. Never use
+     --admin; if the merge is blocked, stop with the PR green.
+  Reply with one line: the issue, what you did, the PR link, and its state.
+
+Merge one PR at a time. Before each, the next agent updates its branch onto
+main and waits for CI again. When all are done, give me a table: issue,
+outcome, PR, merged or waiting for me, and what each fix says should change
+to stop it happening again. Then stop.
 ```
 
 ## Context for a chat assistant

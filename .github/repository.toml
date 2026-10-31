@@ -1,0 +1,6 @@
+# GitHub's About box. Project-owned: edit it, then apply it with
+#   python3 scripts/repo-metadata.py
+# CI warns on each push to main while GitHub differs from this file.
+description = "Async Python MITM proxy with a self-signed CA \u2014 HTTP/1.1 \u0026 HTTP/2, pluggable middleware for inspecting and rewriting traffic in flight."
+homepage = "https://github.com/metalayerlab/mitm-proxy/wiki"
+topics = ["python", "service"]
