@@ -2,7 +2,7 @@
 
 <!-- Add a line for this record to the index in docs/design/README.md (CI checks). -->
 
-Status: Proposed
+Status: Implemented
 Date: 2026-11-02
 Authors: Stephen Cox; drafted by Claude (Claude Code)
 
@@ -99,5 +99,6 @@ several values are invalid, the first in declaration order is reported.
 
 ## Open questions
 
-1. **Status:** this record is written and implemented in the same PR. Recommend: approving the PR
-   approves the record, and it moves to Implemented before merge.
+1. ~~**Status:** this record is written and implemented in the same PR.~~ Decided 2026-11-02: approved
+   under Stephen's overnight delegation (merge with `--admin`) and marked Implemented at merge; Stephen
+   to confirm on review.
