@@ -54,7 +54,7 @@ flowchart LR
 | `mitm_proxy/http/h1.py` | HTTP/1.1 on h11: client-facing server (incl. proxy mode) and upstream client |
 | `mitm_proxy/http/h2.py` | HTTP/2 on h2: client-facing server and upstream client, flow control |
 | `mitm_proxy/exchange.py` | One request: flow, middleware, framing, upstream, response; WebSocket hand-off |
-| `mitm_proxy/pipeline.py` | The middleware API (`Middleware`, `Action`) and the runner |
+| `mitm_proxy/pipeline.py` | The middleware API (`Middleware`, `Action`), mitm-proxy's pipeline policy, and `FlowPipeline`: thin wrappers over [interpose](https://github.com/metalayerlab/interpose)'s pipeline core, which guards every hook (timing, timeout, failure; design 0010) |
 | `mitm_proxy/upstream/pool.py` | The connection pool and the TCP/TLS connector |
 | `mitm_proxy/auth.py` | Basic proxy authentication |
 | `mitm_proxy/metrics.py` | Which metrics exist, their buckets and their labels' declared values, on [interpose](https://github.com/metalayerlab/interpose)'s metric types and text format (design 0009) |
@@ -72,7 +72,7 @@ Following `curl --proxy … https://example.org/` with `example.org` listed:
 6. **Upstream.** The pool returns a connection to `(host, port, SNI)`: an HTTP/2 one is shared by concurrent flows, an HTTP/1.1 one is leased to one request at a time. A reused HTTP/1.1 connection that fails before any response byte is retried once on a new connection, for idempotent requests with a replayable body.
 7. **Back.** The response head becomes `flow.response`; `on_response` and the response chunk hooks run; `framing.plan` picks the framing; the responder writes it.
 
-**Timings:** `Flow.timings` is stamped along the way on the `time.monotonic()` clock: by `exchange.py` at each stage (the request body read, the pool lease, the request sent upstream through a wrapper on the body iterator, the response head, the end), and by `FlowPipeline` around every hook it awaits (per middleware). That's a few clock reads per flow.
+**Timings:** `Flow.timings` is stamped along the way on the `time.monotonic()` clock: by `exchange.py` at each stage (the request body read, the pool lease, the request sent upstream through a wrapper on the body iterator, the response head, the end), and by interpose's guard around every hook `FlowPipeline` awaits (per middleware, on `time.perf_counter()`; only the differences are used). That's a few clock reads per flow.
 
 **Access log:** `exchange.handle` wraps the client's request body in a byte counter and the client's `Responder` in a `_Recorder` (status sent, body bytes, finished or not). The exchange marks the path it took (origin, local, denied, error), and the `finally` that stamps `complete` writes the line: a synchronous log call, so it's also written when the task is cancelled. An unfinished response is `aborted`. Relayed tunnels are logged from `ProxyServer._relay`, using the counts `relay()` returns.
 
@@ -95,6 +95,6 @@ From [0001: Initial design](https://github.com/metalayerlab/mitm-proxy/blob/main
 - **`Flow` per request/stream, protocol-neutral:** both legs negotiate their own protocol; middleware never sees frames.
 - **Chunk-capable hooks from the start, buffered implementation for now.**
 - **Framing from registration, not from what a hook did;** HEAD/1xx/204/304 never framed.
-- **Middleware failure fails open,** with the middleware's name in the log.
+- **Middleware failure fails open,** with the middleware's name in the log; a middleware may opt in to failing closed (`on_error = "fail"`), which denies the flow with the phase's deny status (design 0010).
 - **Upstream TLS is always verified;** extra CAs are added, never substituted.
 - **Middleware by name from a local registry, an immutable config snapshot, `/v1/status` and `/metrics`:** from [0002: Control-plane management](https://github.com/metalayerlab/mitm-proxy/blob/main/docs/design/0002-control-plane-management.md) (Proposed; only these parts are built).

@@ -31,9 +31,9 @@ The origin's certificate doesn't verify: it's self-signed or from a private CA, 
 
 A middleware that rewrites bodies applies to the flow, so the request body is sent chunked, and this origin refuses chunked uploads. Narrow the middleware with `applies_to` so it skips these requests.
 
-### `middleware 'x' failed in …` / `timed out` in the log
+### `middleware 'x' failed in …` / `timed out` / `returned …, not …` in the log
 
-The middleware raised or ran past `middleware.hook_timeout_ms`. The flow carried on without it. Fix the middleware; the traceback is in the log. A middleware that *blocks* the event loop can't be timed out and stalls everything: make it async.
+The middleware raised, ran past `middleware.hook_timeout_ms` (or its own `timeout`), or returned the wrong type (the log names the type, never the value). The flow carried on without it, unless the middleware sets `on_error = "fail"`: then the flow was denied by it (`403`/`502 denied by middleware x`, outcome `denied:x`), as a gate should. Fix the middleware; the traceback is in the log. A middleware that *blocks* the event loop can't be timed out and stalls everything: make it async.
 
 ### Requests are slow: the proxy, the origin or a middleware?
 
@@ -81,11 +81,11 @@ Responses the proxy sends itself, with a one-line plain-text body:
 | Status | Meaning |
 |---|---|
 | 400 | Malformed request, a relative URL sent to the proxy, or CONNECT without `host:port` |
-| 403 | `denied by middleware <name>` (on the request) |
+| 403 | `denied by middleware <name>` (on the request), or a fail-closed middleware failed there |
 | 405 | CONNECT where it isn't allowed |
 | 407 | Proxy credentials missing or wrong |
 | 501 | CONNECT over HTTP/2 (not supported) |
-| 502 | The origin couldn't be reached, failed verification, or broke the connection; `denied by middleware <name>` (on the response); a middleware stopped the request without a response |
+| 502 | The origin couldn't be reached, failed verification, or broke the connection; `denied by middleware <name>` (on the response, or a fail-closed middleware failed there); a middleware stopped the request without a response |
 | 504 | The origin didn't connect or answer in time |
 
 ### `error: <key>: expected int` (or `str`, `bool`, `list`)

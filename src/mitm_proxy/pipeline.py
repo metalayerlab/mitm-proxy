@@ -1,32 +1,52 @@
-"""The middleware API and the pipeline runner.
+"""The middleware API, and mitm-proxy's pipeline on interpose's core (design 0010).
 
 Middleware runs in registration order (a plain list: no priorities). Each hook is
 awaited in turn, inside the read/write loop, and never scheduled as a background
 task: that sequencing is what carries backpressure from a slow hook or a slow
-peer back to the reader. Do not introduce ``create_task`` here.
+peer back to the reader. interpose's ``Run`` keeps that rule; do not introduce
+``create_task`` here.
 
-A hook that raises or exceeds the hook timeout is logged with the middleware's
-name and the flow ID, and that middleware is skipped for the rest of the flow,
-as if it had returned CONTINUE / None. Nothing a middleware does can crash the
-connection or the process. (A hook that blocks the event loop can't be timed
-out; that is the one thing middleware must not do.)
+A hook that raises, returns the wrong type or exceeds the hook timeout is logged
+with the middleware's name and the flow ID, and that middleware is skipped for
+the rest of the flow, as if it had returned CONTINUE / None: mitm-proxy's policy
+(fail open, 0001). Nothing a middleware does can crash the connection or the
+process. A middleware that sets ``on_error = "fail"`` instead denies the flow
+when it fails (``HookFailed``; see ``FlowPipeline``). (A hook that blocks the
+event loop can't be timed out; that is the one thing middleware must not do.)
 """
 
 from __future__ import annotations
 
-import asyncio
 import enum
 import importlib
 import logging
-import time
-from collections.abc import Awaitable, Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, ClassVar
+
+from interpose import pipeline as core
+from interpose.pipeline import NO_LIMIT, HookFailed, InvalidResult, OnError
 
 from mitm_proxy.errors import StartupError
 from mitm_proxy.http.flow import Flow
 
+__all__ = [
+    "NO_LIMIT",
+    "Action",
+    "Entry",
+    "FlowPipeline",
+    "HookFailed",
+    "Middleware",
+    "Outcome",
+    "Pipeline",
+    "is_mutation_capable",
+    "load_middleware",
+    "policy",
+]
+
 log = logging.getLogger(__name__)
+
+HOOK_TIMEOUT = 5.0  # seconds: middleware.hook_timeout_ms's default
 
 
 class Action(enum.Enum):
@@ -40,7 +60,16 @@ class Middleware:
 
     Overriding a chunk hook makes the middleware *mutation-capable*: flows it
     applies to are sent with length-independent framing.
+
+    Two class attributes set this middleware's own failure policy (interpose reads them):
+    ``on_error`` (``"skip"``, the default: fail open; ``"fail"``: a failure denies the flow)
+    and ``timeout`` (seconds per hook call instead of ``middleware.hook_timeout_ms``;
+    ``NO_LIMIT`` for none). Don't use either name for anything else. The middleware's name is
+    always its key in ``middleware.available``.
     """
+
+    on_error: ClassVar[OnError | None] = None
+    timeout: ClassVar[float | None] = None
 
     def applies_to(self, flow: Flow) -> bool:
         """Called once, when the request headers arrive. False: no hooks run for this flow."""
@@ -73,11 +102,27 @@ def is_mutation_capable(middleware: Middleware) -> bool:
     )
 
 
+def policy(hook_timeout: float = HOOK_TIMEOUT) -> core.Policy:
+    """mitm-proxy's answers to interpose's questions: today's behaviour, written down (0010).
+
+    Fail open; response hooks in registration order and never after a local answer (0005);
+    on_done never reaches a middleware that failed (0006); the hook timeout from settings.
+    """
+    return core.Policy(
+        on_error="skip",
+        after_order="chain",
+        after_local=False,
+        observe_failed=False,
+        timeout=hook_timeout,
+    )
+
+
 @dataclass(frozen=True)
 class Entry:
     name: str
     middleware: Middleware
     mutation_capable: bool
+    core: core.Entry[Middleware]  # the name and the middleware's own on_error and timeout
 
 
 @dataclass(frozen=True)
@@ -86,12 +131,24 @@ class Outcome:
     by: str | None = None  # the middleware that stopped or denied
 
 
+def _core_entry(name: str, middleware: Middleware) -> core.Entry[Middleware]:
+    """interpose's entry: the registry name, and the middleware's on_error and timeout."""
+    try:
+        return core.Entry.of(middleware, name=name)
+    except ValueError as e:
+        raise ValueError(f"{e} (its on_error or timeout attribute)") from e
+
+
 class Pipeline:
     def __init__(
-        self, middleware: Sequence[tuple[str, Middleware]] = (), *, hook_timeout: float = 5.0
+        self,
+        middleware: Sequence[tuple[str, Middleware]] = (),
+        *,
+        hook_timeout: float = HOOK_TIMEOUT,
     ) -> None:
         self.hook_timeout = hook_timeout
         self._entries: list[Entry] = []
+        self._core = core.Pipeline[Middleware]([], policy(hook_timeout))
         for name, mw in middleware:
             self.register(name, mw)
 
@@ -102,7 +159,12 @@ class Pipeline:
             raise ValueError(f"middleware {name!r} is registered twice")
         if not isinstance(middleware, Middleware):
             raise TypeError(f"middleware {name!r} is not a Middleware")
-        self._entries.append(Entry(name, middleware, is_mutation_capable(middleware)))
+        entry = Entry(
+            name, middleware, is_mutation_capable(middleware), _core_entry(name, middleware)
+        )
+        self._entries.append(entry)
+        # interpose's pipeline is frozen: build it again (registration happens at startup only).
+        self._core = core.Pipeline([e.core for e in self._entries], self._core.policy)
 
     @property
     def names(self) -> list[str]:
@@ -113,139 +175,167 @@ class Pipeline:
 
         on_failure is called with a middleware's name when it fails, from applies_to on.
         """
-        run = FlowPipeline(flow, self.hook_timeout)
-        run.on_failure = on_failure
-        for entry in self._entries:
-            try:
-                applies = entry.middleware.applies_to(flow)
-            except Exception:
-                run.fail(entry.name, "applies_to")
-                continue
-            if applies:
-                run.entries.append(entry)
-        return run
+        return FlowPipeline(flow, self, on_failure)
 
 
 class FlowPipeline:
-    """The pipeline for one flow: what applies, and what has failed so far."""
+    """The pipeline for one flow: what applies, and what has failed so far.
 
-    def __init__(self, flow: Flow, hook_timeout: float) -> None:
+    Thin wrappers over interpose's ``Run``. A middleware with ``on_error = "fail"`` that fails
+    makes ``run_request``/``run_response`` return a DENY by it (403 and 502 in the exchange,
+    as for a deliberate DENY), and makes a chunk hook raise ``HookFailed`` for the exchange to
+    answer the same way. Under the default policy nothing raises.
+    """
+
+    def __init__(
+        self,
+        flow: Flow,
+        pipeline: Pipeline,
+        on_failure: Callable[[str], None] | None = None,
+    ) -> None:
         self.flow = flow
-        self.hook_timeout = hook_timeout
-        self.entries: list[Entry] = []
-        self.failed: set[str] = set()
+        self.hook_timeout = pipeline.hook_timeout
         self.request_skipped = False
         self.response_skipped = False
-        # Called with a middleware's name when it fails (metrics).
-        self.on_failure: Callable[[str], None] | None = None
+        # Called with a middleware's name when it fails (metrics). Read at each failure.
+        self.on_failure = on_failure
+        # A fail-closed middleware's applies_to failed: the flow is denied by it (0010).
+        self.denied_by: str | None = None
+        by_core = {e.core: e for e in pipeline._entries}
+        try:
+            self._run = pipeline._core.start(
+                select=lambda mw: mw.applies_to(flow),
+                select_hook="applies_to",
+                on_failure=self._failed,
+                timings=flow.timings.middleware,
+                state=flow.metadata,
+            )
+        except HookFailed as e:
+            # Raised before any hook ran; nothing was selected, so no on_done either.
+            self.denied_by = e.failure.middleware
+            self._run = pipeline._core.start(select=lambda _: False, on_failure=self._failed)
+        self._core_entries = pipeline._core.entries
+        self.entries: list[Entry] = [by_core[e] for e in self._run.entries]
+
+    def _failed(self, failure: core.Failure) -> None:
+        """Log one failure with the flow ID, and count it."""
+        name, hook, flow_id = failure.middleware, failure.hook, self.flow.id
+        if failure.timed_out:
+            log.error(
+                "middleware %r timed out in %s after %.1fs (flow %s)",
+                name,
+                hook,
+                failure.timeout,
+                flow_id,
+            )
+        elif isinstance(failure.error, InvalidResult):
+            # The type, never the value (interpose names only the type).
+            log.error(
+                "middleware %r: %s, not %s (flow %s)", name, failure.error, _EXPECTED[hook], flow_id
+            )
+        else:
+            log.error(
+                "middleware %r failed in %s (flow %s)", name, hook, flow_id, exc_info=failure.error
+            )
+        if self.on_failure is not None:
+            self.on_failure(name)
 
     @property
     def applies(self) -> bool:
-        return bool(self.entries)
+        return bool(self.entries) or self.denied_by is not None
 
     @property
     def mutation_capable(self) -> bool:
         return any(e.mutation_capable for e in self.entries)
 
-    def fail(self, name: str, hook: str) -> None:
-        """Record that name raised in hook (call from an except block: logs the traceback)."""
-        log.exception("middleware %r failed in %s (flow %s)", name, hook, self.flow.id)
-        self._mark(name)
+    @property
+    def failed(self) -> set[str]:
+        """The names of the middleware that have failed in this flow, applies_to included."""
+        failed = {e.name for e in self._core_entries if self._run.has_failed(e)}
+        return failed | {self.denied_by} if self.denied_by is not None else failed
 
-    def _mark(self, name: str) -> None:
-        self.failed.add(name)
-        if self.on_failure is not None:
-            self.on_failure(name)
+    async def _phase(self, hook: str, entries: Sequence[core.Entry[Middleware]] | None) -> Outcome:
+        def invoke(mw: Middleware, flow: Flow) -> Any:
+            return getattr(mw, hook)(flow)
 
-    def _active(self) -> list[Entry]:
-        return [e for e in self.entries if e.name not in self.failed]
-
-    async def _call(self, entry: Entry, hook: str, *args: Any) -> Any:
-        """Await one hook under the timeout; on failure, log it and return None."""
-        method: Callable[..., Awaitable[Any]] = getattr(entry.middleware, hook)
-        start = time.monotonic()
         try:
-            async with asyncio.timeout(self.hook_timeout):
-                return await method(*args)
-        except TimeoutError:
-            log.error(
-                "middleware %r timed out in %s after %.1fs (flow %s)",
-                entry.name,
-                hook,
-                self.hook_timeout,
-                self.flow.id,
-            )
-            self._mark(entry.name)
-        except Exception:
-            self.fail(entry.name, hook)
-        finally:
-            spent = self.flow.timings.middleware
-            spent[entry.name] = spent.get(entry.name, 0.0) + time.monotonic() - start
-        return None
-
-    async def _run_phase(self, hook: str) -> Outcome:
-        for entry in self._active():
-            result = await self._call(entry, hook, self.flow)
-            if entry.name in self.failed or result is None or result is Action.CONTINUE:
-                continue
-            if not isinstance(result, Action):
-                log.error(
-                    "middleware %r returned %r from %s, not an Action (flow %s)",
-                    entry.name,
-                    result,
-                    hook,
-                    self.flow.id,
+            if entries is None:
+                stopped = await self._run.before(
+                    hook, self.flow, invoke, until=_stops, valid=_is_action
                 )
-                self._mark(entry.name)
-                continue
-            return Outcome(result, entry.name)
-        return Outcome(Action.CONTINUE)
+            else:
+                stopped = await self._run.each(
+                    hook,
+                    lambda mw: invoke(mw, self.flow),
+                    entries=entries,
+                    until=_stops,
+                    valid=_is_action,
+                )
+        except HookFailed as e:
+            return Outcome(Action.DENY, e.failure.middleware)
+        if stopped is None:
+            return Outcome(Action.CONTINUE)
+        return Outcome(stopped.result, stopped.entry.name)
 
-    async def _run_chunk(self, hook: str, chunk: bytes, is_last: bool) -> bytes:
-        for entry in self._active():
-            result = await self._call(entry, hook, self.flow, chunk, is_last)
-            if entry.name in self.failed or result is None:
-                continue
+    async def _chunk(self, hook: str, chunk: bytes, is_last: bool) -> bytes:
+        async def invoke(mw: Middleware, current: bytes) -> bytes | None:
+            result = await getattr(mw, hook)(self.flow, current, is_last)
+            if result is None:
+                return None
             if not isinstance(result, bytes | bytearray | memoryview):
-                log.error(
-                    "middleware %r returned %r from %s, not bytes or None (flow %s)",
-                    entry.name,
-                    type(result).__name__,
-                    hook,
-                    self.flow.id,
-                )
-                self._mark(entry.name)
-                continue
-            chunk = bytes(result)
-        return chunk
+                raise InvalidResult(f"{hook} returned {type(result).__name__}")
+            return bytes(result)  # every middleware gets bytes from the one before
+
+        return await self._run.fold(hook, chunk, invoke, keep_none=True)
 
     async def run_request(self) -> Outcome:
+        if self.denied_by is not None:
+            return Outcome(Action.DENY, self.denied_by)
         if self.request_skipped:
             return Outcome(Action.CONTINUE)
-        return await self._run_phase("on_request")
+        return await self._phase("on_request", None)
 
     async def run_request_chunk(self, chunk: bytes, is_last: bool) -> bytes:
+        """Raises HookFailed when a fail-closed middleware fails."""
         if self.request_skipped:
             return chunk
-        return await self._run_chunk("on_request_chunk", chunk, is_last)
+        return await self._chunk("on_request_chunk", chunk, is_last)
 
     async def run_response(self) -> Outcome:
         if self.response_skipped:
             return Outcome(Action.CONTINUE)
-        return await self._run_phase("on_response")
+        # What ran on_request and hasn't failed since; nothing after a local answer (0005).
+        return await self._phase("on_response", [e for e, _ in self._run.after_pairs()])
 
     async def run_response_chunk(self, chunk: bytes, is_last: bool) -> bytes:
+        """Raises HookFailed when a fail-closed middleware fails."""
         if self.response_skipped:
             return chunk
-        return await self._run_chunk("on_response_chunk", chunk, is_last)
+        return await self._chunk("on_response_chunk", chunk, is_last)
 
     async def run_done(self) -> None:
         """on_done for every middleware that applied and hasn't failed, in order.
 
         Not skipped for oversize bodies: every middleware that applied is told the flow ended.
+        Always fails open, whatever a middleware's on_error says: the outcome is fixed.
         """
-        for entry in self._active():
-            await self._call(entry, "on_done", self.flow)
+        await self._run.observe("on_done", lambda mw: mw.on_done(self.flow))
+
+
+_EXPECTED = {
+    "on_request": "an Action",
+    "on_response": "an Action",
+    "on_request_chunk": "bytes or None",
+    "on_response_chunk": "bytes or None",
+}
+
+
+def _stops(result: Any) -> bool:
+    return result is not None and result is not Action.CONTINUE
+
+
+def _is_action(result: Any) -> bool:
+    return result is None or isinstance(result, Action)
 
 
 def load_middleware(
@@ -269,5 +359,9 @@ def load_middleware(
                 raise StartupError(f"middleware {name!r}: {ref}() failed: {e}") from e
         if not isinstance(obj, Middleware):
             raise StartupError(f"middleware {name!r}: {ref} is not a Middleware")
+        try:
+            _core_entry(name, obj)
+        except ValueError as e:
+            raise StartupError(str(e)) from e
         loaded.append((name, obj))
     return loaded

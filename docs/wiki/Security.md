@@ -61,7 +61,7 @@ The leaf certificates' shared key is generated at every start and never leaves t
 - **Defaults:** both listeners bind `127.0.0.1`. Binding the proxy elsewhere without `proxy.auth` logs a warning at startup. The Kubernetes NetworkPolicy leaves the proxy port closed until you add a rule.
 - **Proxy authentication:** Basic credentials, compared in constant time; `Proxy-Authorization` is never forwarded to origins. Basic is clear text between client and proxy: use it on trusted networks only.
 - **Input:** HTTP/1.1 is parsed by h11 and HTTP/2 by h2, both strict; request heads are limited to 64 KiB, peeked ClientHellos to 64 KiB, bodies buffered for middleware to `body.max_buffer_bytes`. The allowlist and every setting are validated at startup.
-- **Middleware:** loaded only from the local `middleware.available` registry; configuration selects by name and can never name a module to import. Only install middleware you trust.
+- **Middleware:** loaded only from the local `middleware.available` registry; configuration selects by name and can never name a module to import. Only install middleware you trust. A middleware fails open by default (a crash skips it for the flow); one that enforces a policy should set `on_error = "fail"`, so its failure denies the flow instead of letting it through (see [Writing Middleware](Writing-Middleware#failing-closed-and-your-own-timeout)).
 - **Rate limiting:** none.
 
 ## Reporting a vulnerability
