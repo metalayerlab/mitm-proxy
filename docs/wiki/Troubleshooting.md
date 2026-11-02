@@ -33,7 +33,11 @@ A middleware that rewrites bodies applies to the flow, so the request body is se
 
 ### `middleware 'x' failed in …` / `timed out` / `returned …, not …` in the log
 
-The middleware raised, ran past `middleware.hook_timeout_ms` (or its own `timeout`), or returned the wrong type (the log names the type, never the value). The flow carried on without it, unless the middleware sets `on_error = "fail"`: then the flow was denied by it (`403`/`502 denied by middleware x`, outcome `denied:x`), as a gate should. Fix the middleware; the traceback is in the log. A middleware that *blocks* the event loop can't be timed out and stalls everything: make it async.
+The middleware raised, ran past `middleware.hook_timeout_ms` (or its own `timeout`), or returned the wrong type (the log names the type, never the value). The flow carried on without it, unless the middleware sets `on_error = "fail"`: then the flow ended with `502 middleware x failed` (outcome `denied:x`), as a gate should. Fix the middleware; the traceback is in the log. The timeout is per hook call (each chunk-hook call too), not per flow, and it cancels the hook at its current `await`. A middleware that *blocks* the event loop (sync I/O, `time.sleep`, heavy CPU) can't be timed out and stalls everything: move that work to `asyncio.to_thread` (the thread keeps running after a timeout). A hook that catches `CancelledError` and carries on can't be stopped either.
+
+### `middleware 'x': on_request must be an async function` at startup
+
+One of the middleware's hooks is a plain `def`. Every hook except `applies_to` must be `async def` (design 0011). The proxy refuses to start; a new configuration with it is refused and the running one stays.
 
 ### Requests are slow: the proxy, the origin or a middleware?
 
@@ -81,11 +85,11 @@ Responses the proxy sends itself, with a one-line plain-text body:
 | Status | Meaning |
 |---|---|
 | 400 | Malformed request, a relative URL sent to the proxy, or CONNECT without `host:port` |
-| 403 | `denied by middleware <name>` (on the request), or a fail-closed middleware failed there |
+| 403 | `denied by middleware <name>`: a middleware's deliberate deny on the request |
 | 405 | CONNECT where it isn't allowed |
 | 407 | Proxy credentials missing or wrong |
 | 501 | CONNECT over HTTP/2 (not supported) |
-| 502 | The origin couldn't be reached, failed verification, or broke the connection; `denied by middleware <name>` (on the response, or a fail-closed middleware failed there); a middleware stopped the request without a response |
+| 502 | The origin couldn't be reached, failed verification, or broke the connection; `denied by middleware <name>` (a deny on the response); `middleware <name> failed` (a fail-closed middleware failed, in either phase); a middleware stopped the request without a response |
 | 504 | The origin didn't connect or answer in time |
 
 ### `error: <key>: expected int` (or `str`, `bool`, `list`)

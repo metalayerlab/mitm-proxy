@@ -225,6 +225,13 @@ def server_timing(flow: Flow, local: str | None = None) -> str:
     return ", ".join(parts)
 
 
+def _deny_message(outcome: RunOutcome) -> str:
+    """The body of a middleware's deny: its name only, never a value or an exception (0011)."""
+    if outcome.failed:
+        return f"middleware {outcome.by} failed"
+    return f"denied by middleware {outcome.by}"
+
+
 async def send_simple(
     responder: Responder,
     status: int,
@@ -374,17 +381,24 @@ async def _exchange(
             try:
                 data = await active.run_request_chunk(await request.body.read_all(), True)
             except HookFailed as e:
-                # A fail-closed middleware failed: answered like its DENY (0010).
-                outcome = RunOutcome(Action.DENY, e.failure.middleware)
+                # A fail-closed middleware failed: a 502 naming it (0011).
+                outcome = RunOutcome(Action.DENY, e.failure.middleware, failed=True)
             else:
                 request.body = BufferedBodyStream(data)
         if outcome.action is Action.DENY:
-            log.info("flow %s denied by middleware %r", flow.id, outcome.by)
+            log.info(
+                "flow %s denied by middleware %r%s",
+                flow.id,
+                outcome.by,
+                " (it failed)" if outcome.failed else "",
+            )
             tally.mark("denied", outcome.by)
+            # A deliberate deny is the client's 403; a fail-closed failure is the proxy's 502,
+            # naming the middleware and nothing else: never a value or the exception (0011).
             await send_simple(
                 responder,
-                403,
-                f"denied by middleware {outcome.by}",
+                502 if outcome.failed else 403,
+                _deny_message(outcome),
                 head_only=head_only,
                 timing=timing(outcome.by),
             )
@@ -536,15 +550,20 @@ async def _respond(
                                 await response.body.read_all(), True
                             )
                         except HookFailed as e:
-                            # A fail-closed middleware failed: answered like its DENY (0010).
-                            outcome = RunOutcome(Action.DENY, e.failure.middleware)
+                            # A fail-closed middleware failed: a 502 naming it (0011).
+                            outcome = RunOutcome(Action.DENY, e.failure.middleware, failed=True)
                 if outcome.action is Action.DENY:
-                    log.info("flow %s response denied by middleware %r", flow.id, outcome.by)
+                    log.info(
+                        "flow %s response denied by middleware %r%s",
+                        flow.id,
+                        outcome.by,
+                        " (it failed)" if outcome.failed else "",
+                    )
                     tally.mark("denied", outcome.by)
                     await send_simple(
                         responder,
                         502,
-                        f"denied by middleware {outcome.by}",
+                        _deny_message(outcome),
                         head_only=request.method == "HEAD",
                         timing=server_timing(flow, outcome.by) if timed else None,
                     )
