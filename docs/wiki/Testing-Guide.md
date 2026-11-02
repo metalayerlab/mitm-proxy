@@ -29,6 +29,7 @@ CI runs the unit tests on every supported Python version, together with ruff, my
 - Every behaviour change needs a test that fails without it. A bug fix starts with the failing test.
 - The settings engine (lookup order, type coercion, `_FILE`, YAML errors, `Secret`) is interpose's, and tested there. `tests/unit/test_config.py` tests mitm-proxy's part: the key and variable names, the checks, the rules that span settings, and that secrets stay out of errors and output.
 - The metric types and the text format are interpose's too. `tests/unit/test_metrics.py` keeps `/metrics` byte-for-byte: `metrics_golden.txt` is the output every metric rendered before design 0009, and must not change unless a design record says so. A test that counts a middleware name declares it first (`metrics.declare_middleware`; `bench().context()` does it for its chain).
+- The pipeline's loop and guard (timing, timeouts, catching failures) are interpose's. `tests/unit/test_pipeline.py` and `tests/unit/test_failure_policy.py` test mitm-proxy's part: its policy, the hooks' order and results, per-middleware `on_error` and `timeout`, and how the exchange answers a fail-closed middleware.
 - Assert outcomes (outputs, side effects, errors), not internal calls.
 - Use placeholders for anything that looks real: `example.org`, `192.0.2.0/24`, fake tokens.
 - Don't lower the coverage floor or skip a test to make CI pass.

@@ -35,7 +35,8 @@ from mitm_proxy.http.h1 import H1Upstream
 from mitm_proxy.http.headers import Headers
 from mitm_proxy.http.messages import IncomingRequest, Responder, UpstreamResponse
 from mitm_proxy.metrics import Metrics
-from mitm_proxy.pipeline import Action, FlowPipeline, Pipeline
+from mitm_proxy.pipeline import Action, FlowPipeline, HookFailed, Pipeline
+from mitm_proxy.pipeline import Outcome as RunOutcome
 from mitm_proxy.relay import relay
 from mitm_proxy.scope import Allowlist
 from mitm_proxy.streams import ByteStream
@@ -368,6 +369,15 @@ async def _exchange(
 
     if active is not None:
         outcome = await active.run_request()
+        buffered_body = incoming.has_body and isinstance(request.body, BufferedBodyStream)
+        if outcome.action is Action.CONTINUE and buffered_body:
+            try:
+                data = await active.run_request_chunk(await request.body.read_all(), True)
+            except HookFailed as e:
+                # A fail-closed middleware failed: answered like its DENY (0010).
+                outcome = RunOutcome(Action.DENY, e.failure.middleware)
+            else:
+                request.body = BufferedBodyStream(data)
         if outcome.action is Action.DENY:
             log.info("flow %s denied by middleware %r", flow.id, outcome.by)
             tally.mark("denied", outcome.by)
@@ -394,9 +404,6 @@ async def _exchange(
             tally.mark("local", outcome.by)
             await _respond(ctx, flow, None, tally, None, timed=timed, local=outcome.by)
             return
-        if incoming.has_body and isinstance(request.body, BufferedBodyStream):
-            data = await active.run_request_chunk(await request.body.read_all(), True)
-            request.body = BufferedBodyStream(data)
 
     body = request.body
     body_buffered = isinstance(body, BufferedBodyStream)
@@ -517,6 +524,20 @@ async def _respond(
                 response.body = PassthroughBody(_chain(buffered.chunks, source.__aiter__()))
             if not active.response_skipped:
                 outcome = await active.run_response()
+                data: bytes | None = None
+                if outcome.action is not Action.DENY:
+                    response = flow.response or response
+                    # The hooks may have changed the status (a 304) or the whole response
+                    # (a 204 that now has a body): frame what will actually be sent.
+                    allows_body = framing.response_allows_body(request.method, response.status)
+                    if allows_body and isinstance(response.body, BufferedBodyStream):
+                        try:
+                            data = await active.run_response_chunk(
+                                await response.body.read_all(), True
+                            )
+                        except HookFailed as e:
+                            # A fail-closed middleware failed: answered like its DENY (0010).
+                            outcome = RunOutcome(Action.DENY, e.failure.middleware)
                 if outcome.action is Action.DENY:
                     log.info("flow %s response denied by middleware %r", flow.id, outcome.by)
                     tally.mark("denied", outcome.by)
@@ -528,12 +549,7 @@ async def _respond(
                         timing=server_timing(flow, outcome.by) if timed else None,
                     )
                     return
-                response = flow.response or response
-                # The hooks may have changed the status (a 304) or the whole response
-                # (a 204 that now has a body): frame what will actually be sent.
-                allows_body = framing.response_allows_body(request.method, response.status)
-                if allows_body and isinstance(response.body, BufferedBodyStream):
-                    data = await active.run_response_chunk(await response.body.read_all(), True)
+                if data is not None:
                     response.body = BufferedBodyStream(data)
         elif upstream is not None:
             response.body = PassthroughBody(source.__aiter__())

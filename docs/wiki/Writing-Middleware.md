@@ -161,7 +161,25 @@ class Audit(Middleware):
 ## Rules
 
 - **Never block the event loop.** No `time.sleep`, blocking I/O or long CPU work in a hook: the whole proxy waits. A hook that blocks can't be timed out.
-- **Expect to fail safely.** A hook that raises, or runs longer than `middleware.hook_timeout_ms`, is logged with your middleware's name and the flow ID, and your middleware is skipped for the rest of that flow. The traffic carries on without it: don't use middleware to enforce security.
+- **Expect to fail safely.** A hook that raises, returns the wrong type, or runs longer than `middleware.hook_timeout_ms`, is logged with your middleware's name and the flow ID, and your middleware is skipped for the rest of that flow. The traffic carries on without it, unless your middleware fails closed (below).
+- **`on_error` and `timeout` are reserved attributes.** The pipeline reads them from your middleware (design 0010); don't use the names for anything else, such as an HTTP client's timeout. The middleware's name is always its key in `middleware.available`, whatever a `name` attribute says.
+
+## Failing closed, and your own timeout
+
+By default a middleware fails open, as above. A gate, say a blocklist whose crash would let traffic through, can fail closed instead:
+
+```python
+from mitm_proxy.pipeline import Middleware
+
+
+class Blocklist(Middleware):
+    on_error = "fail"  # a gate that fails open is no gate
+    timeout = 0.5  # seconds per hook call, instead of middleware.hook_timeout_ms
+```
+
+- **`on_error = "fail"`:** when one of its hooks raises, times out or returns the wrong type, the flow is denied by it, exactly as if it had returned `DENY` in that phase: `403 denied by middleware <name>` from `applies_to`, `on_request` or `on_request_chunk`; `502` from `on_response` or `on_response_chunk`. The failure is still logged and counted in `mitm_proxy_middleware_failures_total`. If `applies_to` is the hook that failed, no middleware has been selected yet, so none gets `on_done` for that flow. Bodies over `body.max_buffer_bytes` still skip the body hooks, but a failed `applies_to` denies them too.
+- **`on_done` always fails open,** whatever `on_error` says: the flow has already ended.
+- **`timeout`:** seconds (a number above 0) for each of its hook calls; `NO_LIMIT` for none. A wrong value for either attribute stops startup with a one-line error naming the middleware.
 - **Narrow with `applies_to`.** Every flow a middleware applies to is buffered, and a middleware with a chunk hook makes its flows' bodies go out chunked. Some origins refuse chunked uploads (`411`).
 - **Bodies over `body.max_buffer_bytes`** skip middleware entirely and stream through.
 - **Don't start background tasks per chunk.** Await your work in the hook; the pipeline relies on it for backpressure.
