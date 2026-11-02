@@ -32,9 +32,9 @@ Generated from the code: don't edit the table, run `uv run scripts/gen-wiki.py`.
 | `proxy.access_log` | `MITM_PROXY_PROXY_ACCESS_LOG` | `False` | Log one line per intercepted flow (`mitm_proxy.flows`): sizes, timings and how it ended. |
 | `proxy.access_log_relayed` | `MITM_PROXY_PROXY_ACCESS_LOG_RELAYED` | `False` | Log one line per flow relayed without interception (`mitm_proxy.relayed`): tunnels to unlisted hosts and plain HTTP to them. Records every destination. |
 | `proxy.server_timing` | `MITM_PROXY_PROXY_SERVER_TIMING` | `False` | Add a `Server-Timing` header (connect, origin, middleware, proxy times) to every intercepted response, for browser devtools. Tells pages they were intercepted. |
-| `intercept.hosts` | `MITM_PROXY_INTERCEPT_HOSTS` | *(none)* | The allowlist: hosts to intercept (`example.org`, `*.example.org`, IP literals). Everything else is tunnelled untouched. Empty: intercept nothing. |
-| `middleware.available` | `MITM_PROXY_MIDDLEWARE_AVAILABLE` | *(none)* | Installed middleware that may run, as `name=module:attribute`. |
-| `middleware.chain` | `MITM_PROXY_MIDDLEWARE_CHAIN` | *(none)* | The middleware to run, by name, in order. |
+| `intercept.hosts` | `MITM_PROXY_INTERCEPT_HOSTS` | *(empty list)* | The allowlist: hosts to intercept (`example.org`, `*.example.org`, IP literals). Everything else is tunnelled untouched. Empty: intercept nothing. A list: YAML, or comma-separated. |
+| `middleware.available` | `MITM_PROXY_MIDDLEWARE_AVAILABLE` | *(empty list)* | Installed middleware that may run, as `name=module:attribute`. A list: YAML, or comma-separated. |
+| `middleware.chain` | `MITM_PROXY_MIDDLEWARE_CHAIN` | *(empty list)* | The middleware to run, by name, in order. A list: YAML, or comma-separated. |
 | `middleware.hook_timeout_ms` | `MITM_PROXY_MIDDLEWARE_HOOK_TIMEOUT_MS` | `5000` | A middleware hook that runs longer than this has failed, and is skipped for the flow. |
 | `body.max_buffer_bytes` | `MITM_PROXY_BODY_MAX_BUFFER_BYTES` | `67108864` | The largest body buffered for middleware. A larger body skips middleware and is streamed through. |
 | `ca.cert` | `MITM_PROXY_CA_CERT` | *(none)* | Root CA certificate (PEM), usually via `_FILE`. Empty: `<state_dir>/ca/ca.pem`, generated on first start. |
