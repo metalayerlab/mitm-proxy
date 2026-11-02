@@ -140,6 +140,8 @@ class Bench:
         access_log: bool = False,
         access_log_relayed: bool = False,
     ) -> ExchangeContext:
+        # What ProxyServer._build does: the names are label values before any flow runs.
+        self.metrics.declare_middleware(name for name, _ in middleware or [])
         return ExchangeContext(
             pool=self.pool,
             metrics=self.metrics,

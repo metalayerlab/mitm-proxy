@@ -24,6 +24,10 @@ class FlowType(enum.Enum):
     # RAW_TCP is reserved for Phase 2 (transparent interception of non-HTTP traffic).
 
 
+# The flows counter's type for plain-HTTP (absolute-form) requests: not a FlowType, a route.
+PLAIN_HTTP = "plain_http"
+
+
 @dataclass
 class ClientConn:
     """The client leg: who connected, and what TLS they negotiated (None for plain HTTP)."""
@@ -123,11 +127,15 @@ class Timings:
         return _between(self.started, self.complete)
 
 
+# Every Outcome.kind, declared up front: the flow duration histogram's outcome label (0007, 0009).
+OUTCOME_KINDS = ("origin", "local", "denied", "error", "aborted", "websocket")
+
+
 @dataclass(frozen=True)
 class Outcome:
     """How a flow ended. Written in the access log as kind, kind:by or error:status."""
 
-    kind: str  # "origin" | "local" | "denied" | "error" | "aborted" | "websocket"
+    kind: str  # one of OUTCOME_KINDS
     by: str | None = None  # the middleware, for "local", "denied" (and a STOP's "error")
     status: int | None = None  # the status sent to the client, if one was
 

@@ -13,13 +13,12 @@ from typing import Any, Protocol
 
 from fastapi import FastAPI, Response
 from fastapi.responses import JSONResponse, PlainTextResponse
+from interpose.metrics import CONTENT_TYPE
 
 from mitm_proxy import DESCRIPTION, __version__
 from mitm_proxy.config import Config
 from mitm_proxy.metrics import Metrics
 from mitm_proxy.tls.ca import CertificateAuthority
-
-PROMETHEUS_TEXT = "text/plain; version=0.0.4; charset=utf-8"
 
 
 class Runtime(Protocol):
@@ -67,7 +66,7 @@ def create_app(config: Config, runtime: Runtime | None = None) -> FastAPI:
     def metrics() -> Response:
         if runtime is None:
             return not_running
-        return Response(runtime.metrics.render(), media_type=PROMETHEUS_TEXT)
+        return Response(runtime.metrics.render(), media_type=CONTENT_TYPE)
 
     @app.get(
         "/ca.pem",

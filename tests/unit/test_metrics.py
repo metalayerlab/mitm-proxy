@@ -1,13 +1,28 @@
-import pytest
+from pathlib import Path
 
-from mitm_proxy.metrics import MIDDLEWARE_BUCKETS, NETWORK_BUCKETS, Gauge, Histogram, Metrics
+import pytest
+from interpose.metrics import CONTENT_TYPE, Gauge, Histogram, Label
+
+from mitm_proxy.classify import Decision
+from mitm_proxy.http.flow import OUTCOME_KINDS, FlowType
+from mitm_proxy.metrics import (
+    FLOW_TYPES,
+    MIDDLEWARE_BUCKETS,
+    NETWORK_BUCKETS,
+    TUNNEL_REASONS,
+    Metrics,
+)
+
+GOLDEN = Path(__file__).with_name("metrics_golden.txt")
 
 
 def test_render_is_prometheus_text() -> None:
     m = Metrics("1.2.3")
     m.flows.inc("http")
     m.flows.inc("http")
-    m.middleware_failures.inc('we"ird\\name\n')
+    odd = 'we"ird\\name\n'
+    m.declare_middleware([odd])  # every label value is declared before it is used (0009)
+    m.middleware_failures.inc(odd)
     m.certificate_expiry.set(1.5, "ca")
     text = m.render()
     assert "# TYPE mitm_proxy_flows_total counter" in text
@@ -18,8 +33,90 @@ def test_render_is_prometheus_text() -> None:
     assert text.endswith("\n")
 
 
+def _populated() -> Metrics:
+    """Every metric with samples, as the hand-written exposition rendered them before 0009."""
+    m = Metrics("1.2.3")
+    m.declare_middleware(["audit", "block"])
+    m.client_connections.add(2)
+    m.client_connections.add(-1)
+    for kind in ("http", "http", "plain_http", "websocket"):
+        m.flows.inc(kind)
+    for reason in ("out_of_scope", "not_tls", "sni_out_of_scope"):
+        m.tunnels.inc(reason)
+    m.middleware_failures.inc("audit")
+    m.middleware_failures.inc("block")
+    m.oversize_passthrough.inc("request")
+    m.oversize_passthrough.inc("response")
+    m.proxy_auth_failures.inc()
+    m.upstream_connections.read = lambda: {("http/1.1",): 1.0, ("h2",): 3.0}
+    m.config_applies.inc("applied")
+    m.certificate_expiry.set(1798761600.5, "ca")
+    for value, outcome in (
+        (0.003, "origin"),
+        (0.2, "origin"),
+        (75.0, "origin"),
+        (0.05, "denied"),
+        (0.01, "local"),
+        (1.5, "error"),
+        (2, "aborted"),
+    ):
+        m.flow_duration.observe(value, outcome)
+    m.upstream_connect.observe(0.02, "false")
+    m.upstream_connect.observe(0.0004, "true")
+    m.origin_ttfb.observe(0.125)
+    m.middleware_duration.observe(0.00005, "audit")
+    m.middleware_duration.observe(0.3, "audit")
+    m.middleware_duration.observe(6.0, "block")
+    return m
+
+
+def test_output_is_byte_for_byte_what_it_was() -> None:
+    # metrics_golden.txt was rendered by mitm-proxy's own exposition (v0.2.0) from the same
+    # calls: dashboards and recording rules built on 0007 depend on this text (0009).
+    assert _populated().render() == GOLDEN.read_text()
+
+
+def test_the_content_type_is_unchanged() -> None:
+    assert CONTENT_TYPE == "text/plain; version=0.0.4; charset=utf-8"
+
+
+def test_every_label_value_the_proxy_uses_is_declared() -> None:
+    assert set(FLOW_TYPES) == {t.value for t in FlowType} | {"plain_http"}
+    assert set(TUNNEL_REASONS) == {d.value for d in Decision}
+    m = Metrics("1")
+    for outcome in OUTCOME_KINDS:
+        m.flow_duration.observe(0.1, outcome)
+    assert len(m.flow_duration.series) == len(OUTCOME_KINDS)
+
+
+def test_an_undeclared_value_is_refused_without_naming_it() -> None:
+    m = Metrics("1")
+    with pytest.raises(ValueError, match="'middleware'") as e:
+        m.middleware_failures.inc("example.org")
+    assert "example.org" not in str(e.value)
+    with pytest.raises(ValueError):
+        m.flows.inc("example.org")
+    assert "example.org" not in m.render()
+
+
+def test_one_declare_covers_both_middleware_metrics() -> None:
+    m = Metrics("1")
+    m.declare_middleware(["audit"])
+    m.middleware_failures.inc("audit")
+    m.middleware_duration.observe(0.01, "audit")
+    assert 'mitm_proxy_middleware_failures_total{middleware="audit"} 1' in m.render()
+    assert m.middleware_duration.series.keys() == {("audit",)}
+
+
+def test_a_reader_reporting_an_undeclared_protocol_fails_the_render() -> None:
+    m = Metrics("1")
+    m.upstream_connections.read = lambda: {("h3",): 1.0}
+    with pytest.raises(ValueError, match="'protocol'"):
+        m.render()
+
+
 def test_gauge_with_a_reader() -> None:
-    g = Gauge("g", "help", ("protocol",), read=lambda: {("h2",): 3.0})
+    g = Gauge("g", "help", (Label("protocol", ("h2",)),), read=lambda: {("h2",): 3.0})
     assert g.render()[-1] == 'g{protocol="h2"} 3'
     plain = Gauge("p", "help")
     plain.add(2)
@@ -28,7 +125,7 @@ def test_gauge_with_a_reader() -> None:
 
 
 def test_histogram_renders_cumulative_buckets_sum_and_count() -> None:
-    h = Histogram("h_seconds", "help", (0.1, 1), ("outcome",))
+    h = Histogram("h_seconds", "help", (0.1, 1), (Label("outcome", ("origin",)),))
     for value in (0.05, 0.1, 0.5, 7):  # 0.1 lands in le="0.1": le is inclusive
         h.observe(value, "origin")
     assert h.render() == [

@@ -22,6 +22,7 @@ from mitm_proxy.errors import (
 from mitm_proxy.http import framing
 from mitm_proxy.http.body import BufferedBodyStream, PassthroughBody, empty
 from mitm_proxy.http.flow import (
+    PLAIN_HTTP,
     ClientConn,
     Flow,
     FlowType,
@@ -70,7 +71,7 @@ class ExchangeContext:
             return self.target, self.pipeline, FlowType.HTTP.value
         intercepted = self.intercepts(request)
         target = Target(request.host, request.port, tls=False)
-        return target, self.pipeline if intercepted else None, "plain_http"
+        return target, self.pipeline if intercepted else None, PLAIN_HTTP
 
     def intercepts(self, request: Request) -> bool:
         """A TLS-intercepted flow, or plain HTTP to a listed host."""

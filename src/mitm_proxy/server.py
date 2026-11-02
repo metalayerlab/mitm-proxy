@@ -136,6 +136,9 @@ class ProxyServer:
             if middleware is not None
             else load_middleware(config.middleware_available, config.middleware_chain)
         )
+        # Before the pipeline exists: every name it can report is already a declared label
+        # value. The whole registry, so the names a later chain may use are covered too (0009).
+        self.metrics.declare_middleware([*config.middleware_available, *(n for n, _ in loaded)])
         pipeline = Pipeline(loaded, hook_timeout=config.hook_timeout_ms / 1000)
         return Snapshot(config, Allowlist(config.intercept_hosts), pipeline, config_hash(config))
 
