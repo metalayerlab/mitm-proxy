@@ -40,7 +40,6 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import cast
 
 from interpose.secret import Secret
 from interpose.settings import ConfigError, Setting, Settings, Value, one_of, port, positive
@@ -302,18 +301,14 @@ class Config:
 
 def load_config(path: Path | None = None, environ: Mapping[str, str] | None = None) -> Config:
     """Load the configuration. A missing config file is not an error: defaults apply."""
-    resolved = SETTINGS.resolve(path, environ)
-    # SETTINGS has coerced every value to its setting's type (a secret=True one to a Secret, read
-    # with reveal() where it's used), so cast() only tells mypy which type that is.
-    values = dict(resolved.values)
-
-    # one_of keeps the case it was given in; the logging module wants upper case.
-    log_level = cast(str, values["log_level"]).upper()
-    values["log_level"] = log_level
+    r = SETTINGS.resolve(path, environ)
+    # SETTINGS has coerced every value to its setting's type; the typed accessors return it as
+    # that type, and a secret=True one only through r.secret() (a Secret: reveal() where used).
+    # one_of gives log_level the declared spelling (upper case, as logging wants it).
 
     # Rules that span settings.
-    available = _parse_available(values["middleware.available"])
-    chain = cast(tuple[str, ...], values["middleware.chain"])
+    available = _parse_available(r.list("middleware.available"))
+    chain = r.list("middleware.chain")
     for name in chain:
         if name == "log" and name not in available:
             raise ConfigError(
@@ -326,37 +321,37 @@ def load_config(path: Path | None = None, environ: Mapping[str, str] | None = No
                 f"(known: {', '.join(sorted(available)) or 'none'})"
             )
 
-    ca_cert, ca_key = cast(str, values["ca.cert"]), cast(Secret, values["ca.key"])
+    ca_cert, ca_key = r.str("ca.cert"), r.secret("ca.key")
     if bool(ca_cert) != bool(ca_key):
         raise ConfigError("ca.cert and ca.key: set both, or neither")
 
     return Config(
-        log_level=log_level,
-        host=cast(str, values["listen.host"]),
-        port=cast(int, values["listen.port"]),
-        state_dir=Path(cast(str, values["state_dir"])),
-        proxy_host=cast(str, values["proxy.host"]),
-        proxy_port=cast(int, values["proxy.port"]),
-        proxy_auth=cast(Secret, values["proxy.auth"]),
-        peek_timeout_ms=cast(int, values["proxy.peek_timeout_ms"]),
-        idle_timeout_ms=cast(int, values["proxy.idle_timeout_ms"]),
-        shutdown_grace_ms=cast(int, values["proxy.shutdown_grace_ms"]),
-        access_log=cast(bool, values["proxy.access_log"]),
-        access_log_relayed=cast(bool, values["proxy.access_log_relayed"]),
-        server_timing=cast(bool, values["proxy.server_timing"]),
-        intercept_hosts=cast(tuple[str, ...], values["intercept.hosts"]),
+        log_level=r.str("log_level"),
+        host=r.str("listen.host"),
+        port=r.int("listen.port"),
+        state_dir=Path(r.str("state_dir")),
+        proxy_host=r.str("proxy.host"),
+        proxy_port=r.int("proxy.port"),
+        proxy_auth=r.secret("proxy.auth"),
+        peek_timeout_ms=r.int("proxy.peek_timeout_ms"),
+        idle_timeout_ms=r.int("proxy.idle_timeout_ms"),
+        shutdown_grace_ms=r.int("proxy.shutdown_grace_ms"),
+        access_log=r.bool("proxy.access_log"),
+        access_log_relayed=r.bool("proxy.access_log_relayed"),
+        server_timing=r.bool("proxy.server_timing"),
+        intercept_hosts=r.list("intercept.hosts"),
         middleware_available=available,
         middleware_chain=chain,
-        hook_timeout_ms=cast(int, values["middleware.hook_timeout_ms"]),
-        max_buffer_bytes=cast(int, values["body.max_buffer_bytes"]),
+        hook_timeout_ms=r.int("middleware.hook_timeout_ms"),
+        max_buffer_bytes=r.int("body.max_buffer_bytes"),
         ca_cert=ca_cert,
         ca_key=ca_key,
-        ca_common_name=cast(str, values["ca.common_name"]),
-        leaf_cache_size=cast(int, values["ca.leaf_cache_size"]),
-        upstream_extra_ca_file=cast(str, values["upstream.extra_ca_file"]),
-        upstream_connect_timeout_ms=cast(int, values["upstream.connect_timeout_ms"]),
-        upstream_idle_timeout_ms=cast(int, values["upstream.idle_timeout_ms"]),
-        upstream_max_connections_per_host=cast(int, values["upstream.max_connections_per_host"]),
-        values=values,
-        sources=dict(resolved.sources),
+        ca_common_name=r.str("ca.common_name"),
+        leaf_cache_size=r.int("ca.leaf_cache_size"),
+        upstream_extra_ca_file=r.str("upstream.extra_ca_file"),
+        upstream_connect_timeout_ms=r.int("upstream.connect_timeout_ms"),
+        upstream_idle_timeout_ms=r.int("upstream.idle_timeout_ms"),
+        upstream_max_connections_per_host=r.int("upstream.max_connections_per_host"),
+        values=dict(r.values),
+        sources=dict(r.sources),
     )

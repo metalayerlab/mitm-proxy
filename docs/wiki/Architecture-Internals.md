@@ -29,7 +29,7 @@ flowchart LR
 | Module | Responsibility |
 |---|---|
 | `mitm_proxy/__init__.py` | Package version |
-| `mitm_proxy/config.py` | The settings, their checks and the rules that span settings, on [interpose](https://github.com/metalayerlab/interpose)'s engine (`_FILE` > env > file > default, strict types, `Secret`; design 0008) |
+| `mitm_proxy/config.py` | The settings, their checks and the rules that span settings, on [interpose](https://github.com/metalayerlab/interpose)'s engine (`_FILE` > env > file > default, strict types, `Secret`; design 0008). `load_config` reads each value through interpose's typed accessors (`r.str`, `r.int`, `r.bool`, `r.list`, `r.secret`), so a secret setting can only be read as a `Secret`, and `one_of` gives `log_level` its declared upper-case spelling |
 | `mitm_proxy/cli.py` | The `mitm-proxy` command (Typer) |
 | `mitm_proxy/api.py` | The HTTP API (FastAPI): health, readiness, version |
 
