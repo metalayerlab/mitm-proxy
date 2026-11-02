@@ -74,7 +74,7 @@ Behaviour, none of it reachable from traffic or configuration:
 | A label value outside its declared set (a code bug) | a new series | `ValueError` at the call |
 | The wrong number of label values (a code bug) | an error when `/metrics` rendered | `ValueError` at the call |
 | A negative or non-finite counter increment, a histogram `NaN` | accepted | `ValueError` |
-| A gauge holding `inf` or `NaN` | `/metrics` failed (`OverflowError`) | renders `+Inf`, `-Inf`, `NaN` |
+| A gauge holding `inf` or `NaN` | `/metrics` failed (`OverflowError`, `ValueError`) | renders `+Inf`, `-Inf`, `NaN` |
 
 The first row is the point: a host, path or user name can't become a label by accident. Every metric
 call the proxy makes uses a value from the table above, and the tests exercise each one.
