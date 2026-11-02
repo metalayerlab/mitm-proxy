@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.3.0](https://github.com/metalayerlab/mitm-proxy/compare/v0.2.1...v0.3.0) (2026-11-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* a fail-closed failure on the request side is now 502 "middleware <name> failed" instead of 403, and a middleware with a non-async hook stops startup.
+
+### ✨ Features
+
+* a fail-closed middleware failure is a 502; sync hooks refused at startup (design 0011) ([#17](https://github.com/metalayerlab/mitm-proxy/issues/17)) ([a745161](https://github.com/metalayerlab/mitm-proxy/commit/a7451613337a53fd3a17f84dbf2bb6c308861370))
+* a hook that blocks past its timeout, or swallows its cancellation, is now a timeout failure (skipped by default, 502 if fail-closed) instead of having its late result accepted; the log line adds "late: overran" or "late: swallowed" (design 0011) ([bea74b2](https://github.com/metalayerlab/mitm-proxy/commit/bea74b24220242592e72202a08df8c8f42339dd8))
+
+
+### ♻️ Refactoring
+
+* bump interpose to v0.2.0 and read settings through its typed accessors ([#22](https://github.com/metalayerlab/mitm-proxy/issues/22)) ([579a9ec](https://github.com/metalayerlab/mitm-proxy/commit/579a9ecb5b11311a964485e0e111de9bc395715b))
+
+
+### 📚 Documentation
+
+* hook timeouts are per call and cancel the hook; hooks must be cancel-safe. ([a745161](https://github.com/metalayerlab/mitm-proxy/commit/a7451613337a53fd3a17f84dbf2bb6c308861370))
+
 ## [0.2.1](https://github.com/metalayerlab/mitm-proxy/compare/v0.2.0...v0.2.1) (2026-11-02)
 
 
