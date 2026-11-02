@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.1](https://github.com/metalayerlab/mitm-proxy/compare/v0.2.0...v0.2.1) (2026-11-02)
+
+
+### ✨ Features
+
+* adopt interpose metrics (design 0009) ([#12](https://github.com/metalayerlab/mitm-proxy/issues/12)) ([c3123ae](https://github.com/metalayerlab/mitm-proxy/commit/c3123aee67a91551c2b110ba686f0f1ba3eda41d))
+* adopt interpose pipeline core (design 0010) ([#14](https://github.com/metalayerlab/mitm-proxy/issues/14)) ([67be979](https://github.com/metalayerlab/mitm-proxy/commit/67be97909dc75f05dceee199b0bff990b318dde3))
+
 ## [0.2.0](https://github.com/metalayerlab/mitm-proxy/compare/v0.1.1...v0.2.0) (2026-11-02)
 
 
