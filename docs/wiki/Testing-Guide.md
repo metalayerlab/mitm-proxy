@@ -27,6 +27,7 @@ CI runs the unit tests on every supported Python version, together with ruff, my
 ## Writing tests
 
 - Every behaviour change needs a test that fails without it. A bug fix starts with the failing test.
+- The settings engine (lookup order, type coercion, `_FILE`, YAML errors, `Secret`) is interpose's, and tested there. `tests/unit/test_config.py` tests mitm-proxy's part: the key and variable names, the checks, the rules that span settings, and that secrets stay out of errors and output.
 - Assert outcomes (outputs, side effects, errors), not internal calls.
 - Use placeholders for anything that looks real: `example.org`, `192.0.2.0/24`, fake tokens.
 - Don't lower the coverage floor or skip a test to make CI pass.

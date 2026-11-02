@@ -39,6 +39,7 @@ mitm-proxy decrypts traffic on purpose, so the question is who else can use that
 
 - Secrets are read from files only (`MITM_PROXY_<KEY>_FILE`), never from the config file. See [In-Depth Configuration](In-Depth-Configuration#secrets).
 - Values are never logged. Logs and `mitm-proxy config` show where a value came from, never the value itself.
+- `proxy.auth` and `ca.key` are held as `Secret` values: printing, logging or formatting one gives `********`, and an invalid value's error message leaves it out. Code reads the value only with `reveal()`, at the point of use.
 - CI scans every commit with gitleaks, and secrets in history fail the build.
 
 | Secret | Grants | Rotate |

@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Annotated
 
 import typer
+from interpose.secret import MASK
 
 from mitm_proxy import DESCRIPTION, __version__
 from mitm_proxy.config import CONFIG_ENV, SETTINGS, Config, ConfigError, load_config
@@ -65,7 +66,7 @@ def show_config(config: ConfigOption = None) -> None:
     for setting in SETTINGS:
         value = cfg.values.get(setting.key)
         if setting.secret:
-            shown = "********" if value else ""
+            shown = MASK if value else ""
         elif isinstance(value, tuple):
             shown = ", ".join(value)
         else:
@@ -132,7 +133,7 @@ def ca_show(
     try:
         cert, _ = load_root(
             cert_pem=cfg.ca_cert,
-            key_pem=cfg.ca_key,
+            key_pem=cfg.ca_key.reveal(),
             state_dir=cfg.state_dir,
             common_name=cfg.ca_common_name,
             generate=False,

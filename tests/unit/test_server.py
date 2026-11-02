@@ -282,6 +282,31 @@ async def test_status_apply_and_hash(tmp_path: Path) -> None:
     await proxy.stop()
 
 
+async def test_secrets_are_revealed_only_where_used(tmp_path: Path) -> None:
+    from mitm_proxy.tls.ca import CERT_FILE, KEY_FILE, fingerprint, generate_root, write_root
+
+    cert, key = generate_root("settings CA")
+    write_root(tmp_path / "given", cert, key)
+    auth = tmp_path / "auth"
+    auth.write_text("user:s3cret\n", encoding="utf-8")
+    config = make_config(
+        tmp_path / "state",
+        MITM_PROXY_PROXY_AUTH_FILE=str(auth),
+        MITM_PROXY_CA_CERT_FILE=str(tmp_path / "given" / CERT_FILE),
+        MITM_PROXY_CA_KEY_FILE=str(tmp_path / "given" / KEY_FILE),
+    )
+    proxy = ProxyServer(config, connector=Origin().connector)
+    # The proxy authenticates with the value, and signs with the key from the settings...
+    assert proxy.source.auth() == "user:s3cret"
+    assert proxy.ca.fingerprint == fingerprint(cert)
+    # ...and neither reaches the status, the metrics or the snapshot's repr.
+    key_pem = (tmp_path / "given" / KEY_FILE).read_text(encoding="utf-8")
+    key_body = key_pem.splitlines()[1]
+    for shown in (str(proxy.status()), proxy.metrics.render(), repr(proxy.snapshot)):
+        assert "s3cret" not in shown and key_body not in shown
+    await proxy.stop()
+
+
 async def test_start_failure_is_a_startup_error(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
