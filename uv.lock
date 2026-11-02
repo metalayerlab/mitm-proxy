@@ -465,6 +465,14 @@ wheels = [
 ]
 
 [[package]]
+name = "interpose"
+version = "0.1.0"
+source = { git = "https://github.com/metalayerlab/interpose?rev=v0.1.0#504e115e08bbf41491c1fea55fcf7bc86b6050d0" }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[[package]]
 name = "librt"
 version = "0.16.0"
 source = { registry = "https://pypi.org/simple" }
@@ -580,6 +588,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "h11" },
     { name = "h2" },
+    { name = "interpose" },
     { name = "pyyaml" },
     { name = "typer" },
     { name = "uvicorn" },
@@ -601,6 +610,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "h11", specifier = ">=0.16.0" },
     { name = "h2", specifier = ">=4.4.1" },
+    { name = "interpose", git = "https://github.com/metalayerlab/interpose?rev=v0.1.0" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "typer", specifier = ">=0.15" },
     { name = "uvicorn", specifier = ">=0.34" },

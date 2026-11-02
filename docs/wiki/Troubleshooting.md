@@ -88,6 +88,10 @@ Responses the proxy sends itself, with a one-line plain-text body:
 | 502 | The origin couldn't be reached, failed verification, or broke the connection; `denied by middleware <name>` (on the response); a middleware stopped the request without a response |
 | 504 | The origin didn't connect or answer in time |
 
+### `error: <key>: expected int` (or `str`, `bool`, `list`)
+
+A value doesn't have its setting's type, and the message says where it came from (`file`, or the variable's name). The usual causes: a decimal where a whole number is wanted (`port: 3128.0`, `max_buffer_bytes: 0.5`), digits with underscores in a variable (`1_000`), or a YAML list where one value is wanted (`listen.host: [a, b]`). Versions before design 0008 silently truncated a decimal, read `1_000` as `1000` and used a list's text as the value; now all three stop startup. Fix the value: `mitm-proxy config` shows every setting's source. For a secret setting, the message leaves out the value.
+
 ### `error: cannot read MITM_PROXY_..._FILE`
 
 The file named by a `_FILE` variable doesn't exist, or the process can't read it. Check the path inside the container or unit, and the file's owner and mode: the process runs as uid 1000 / the `mitm-proxy` user.

@@ -91,7 +91,7 @@ class ProxyServer:
         self.metrics = Metrics(__version__)
         cert, key = load_root(
             cert_pem=config.ca_cert,
-            key_pem=config.ca_key,
+            key_pem=config.ca_key.reveal(),
             state_dir=config.state_dir,
             common_name=config.ca_common_name,
             generate=True,
@@ -121,7 +121,7 @@ class ProxyServer:
         self.source = ExplicitProxySource(
             on_tunnel=self.handle_tunnel,
             plain_context=self._plain_context,
-            auth=lambda: self.snapshot.config.proxy_auth,
+            auth=lambda: self.snapshot.config.proxy_auth.reveal(),
             idle_timeout=config.idle_timeout_ms / 1000,
             on_auth_failure=self.metrics.proxy_auth_failures.inc,
         )

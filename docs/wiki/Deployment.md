@@ -4,6 +4,8 @@ Manifests live in [`contrib/`](https://github.com/metalayerlab/mitm-proxy/tree/m
 
 ## Docker Compose
 
+Building the image yourself fetches the [interpose](https://github.com/metalayerlab/interpose) dependency from GitHub at a pinned tag (the builder stage installs `git` for that), so the build needs access to github.com.
+
 ```sh
 mkdir -p config state
 cp contrib/mitm-proxy.example.yaml config/config.yaml   # edit it
@@ -58,6 +60,6 @@ Read the [CHANGELOG](https://github.com/metalayerlab/mitm-proxy/blob/main/CHANGE
 - Kubernetes: change `?ref=` (or the `images:` tag) in the overlay, and let Flux reconcile.
 - systemd: `uv pip install --python /opt/mitm-proxy git+https://github.com/metalayerlab/mitm-proxy@vX.Y.Z`, then `systemctl restart mitm-proxy`.
 
-**Keep `<state_dir>/ca/` across upgrades:** it's the root CA your clients trust, and the file layout there is fixed. A new release never needs a data migration so far. New settings arrive with defaults, so an existing config file keeps working.
+**Keep `<state_dir>/ca/` across upgrades:** it's the root CA your clients trust, and the file layout there is fixed. A new release never needs a data migration so far. New settings arrive with defaults, so an existing config file keeps working. One exception: since design 0008, a value of the wrong type (a decimal for a whole number, a list for a single value) stops startup instead of being silently converted; `mitm-proxy config` with the new version shows any before you switch.
 
 To roll back, deploy the previous image tag (Compose, Kubernetes) or reinstall the previous version (systemd). The CA and config files work with either.

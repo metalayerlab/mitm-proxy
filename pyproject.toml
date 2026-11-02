@@ -7,6 +7,7 @@ readme = "README.md"
 requires-python = ">=3.13"
 license = "Unlicense"
 dependencies = [
+    "interpose @ git+https://github.com/metalayerlab/interpose@v0.1.0",
     "pyyaml>=6.0",
     "typer>=0.15",
     "fastapi>=0.115",
@@ -40,6 +41,10 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/mitm_proxy"]
+
+[tool.hatch.metadata]
+# interpose is pinned by its git URL, not PyPI (template-python decision 0003)
+allow-direct-references = true
 
 [tool.ruff]
 line-length = 100

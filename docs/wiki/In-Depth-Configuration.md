@@ -12,6 +12,8 @@ Every setting can be given in four places, and the first one that has it wins:
 `<KEY>` is the setting's key in upper case, with the dots as underscores: `listen.port` is `MITM_PROXY_LISTEN_PORT`.
 `mitm-proxy config` prints the effective value of every setting and where it came from, with secrets masked.
 
+Each value must have its setting's type, wherever it comes from: there are no silent conversions. An integer setting takes a whole number (`3128`, not `3128.0` or `1_000` from a variable); a yes/no setting takes `true`/`false`, `yes`/`no`, `on`/`off` or `1`/`0`; a text setting takes a single value, not a YAML list or mapping; a list setting takes a YAML list or a comma-separated string. Anything else stops startup with `error: <key>: expected <type>`, naming where the value came from. A `_FILE` value loses its trailing whitespace (the final newline), nothing else. The engine is the [interpose](https://github.com/metalayerlab/interpose) library (design 0008).
+
 ## Settings
 
 Generated from the code: don't edit the table, run `uv run scripts/gen-wiki.py`.
@@ -164,6 +166,8 @@ This project's secrets:
 |---|---|---|
 | `proxy.auth` | Use of the proxy (`user:password`) | `MITM_PROXY_PROXY_AUTH_FILE` |
 | `ca.key` | Signing certificates that every client trusting the root accepts: the most sensitive value here | `MITM_PROXY_CA_KEY_FILE`, with `MITM_PROXY_CA_CERT_FILE` for the (public) certificate |
+
+Inside the proxy a secret is a `Secret` value, which prints as `********` in logs, errors and `repr()`; only the code that authenticates clients or loads the CA reads the value itself. The status endpoint and the configuration hash record only whether a secret is set.
 
 When `ca.key` isn't set, the key lives in `<state_dir>/ca/ca-key.pem` with mode `0600`; the proxy warns if it's readable by anyone else.
 

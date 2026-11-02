@@ -40,3 +40,5 @@ the team (and its AI assistants) should know at a glance.
 - Automatic re-enrollment after 401/403: single-use token loops; revoked stays revoked (design 0002).
 - Running `on_response` for flows middleware answered itself (STOP/DENY): changes what STOP means; cache and rewrite middleware would act on local answers (design 0005).
 - Calling `on_done` from background tasks: hooks are never `create_task`ed (design 0006).
+- Depending on interpose through `[tool.uv.sources]`: the published metadata would name a bare `interpose`, which pip resolves from PyPI (design 0008).
+- Secrets as plain `str` fields, masked only where displayed: every new use site has to remember; `Secret` makes a slip print `********` (design 0008).

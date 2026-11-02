@@ -8,5 +8,5 @@
 # Packages go after the colon, separated by spaces; repeat a line for more. For example:
 #   build: gcc pkg-config libfuse3-dev
 #   runtime: fuse3 libfuse3-3
-build:
+build: git
 runtime:

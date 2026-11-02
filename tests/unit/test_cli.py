@@ -28,16 +28,16 @@ def test_config_error_exits_2(write_config: Callable[..., Path]) -> None:
     assert "log_level" in result.stderr
 
 
-def test_secrets_are_masked(
-    monkeypatch: pytest.MonkeyPatch, write_config: Callable[..., Path]
-) -> None:
-    from mitm_proxy import cli
-    from mitm_proxy.config import SETTINGS, Setting
-
-    secret = Setting(SETTINGS[0].key, SETTINGS[0].default, SETTINGS[0].help, secret=True)
-    monkeypatch.setattr(cli, "SETTINGS", (secret, *SETTINGS[1:]))
-    result = runner.invoke(app, ["config", "-c", str(write_config(""))])
-    assert "log_level = ********" in result.stdout
+def test_secrets_are_masked(write_config: Callable[..., Path]) -> None:
+    path = write_config("")
+    unset = runner.invoke(app, ["config", "-c", str(path)])
+    assert "proxy.auth =   (default)" in unset.stdout
+    result = runner.invoke(
+        app, ["config", "-c", str(path)], env={"MITM_PROXY_PROXY_AUTH": "user:s3cret"}
+    )
+    assert result.exit_code == 0
+    assert "proxy.auth = ********  (MITM_PROXY_PROXY_AUTH)" in result.stdout
+    assert "s3cret" not in result.output
 
 
 def test_main_runs_app(monkeypatch: pytest.MonkeyPatch) -> None:
