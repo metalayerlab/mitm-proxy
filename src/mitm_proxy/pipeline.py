@@ -10,9 +10,11 @@ A hook that raises, returns the wrong type or exceeds the hook timeout is logged
 with the middleware's name and the flow ID, and that middleware is skipped for
 the rest of the flow, as if it had returned CONTINUE / None: mitm-proxy's policy
 (fail open, 0001). Nothing a middleware does can crash the connection or the
-process. A middleware that sets ``on_error = "fail"`` instead denies the flow
-when it fails (``HookFailed``; see ``FlowPipeline``). (A hook that blocks the
-event loop can't be timed out; that is the one thing middleware must not do.)
+process. A middleware that sets ``on_error = "fail"`` instead ends the flow with
+a 502 naming it when it fails (``HookFailed``; see ``FlowPipeline``; design 0011).
+Every hook must be an ``async def``: a sync one is refused when the middleware is
+registered, at startup and on reload (0011). (A hook that blocks the event loop
+can't be timed out; that is the one thing middleware must not do.)
 """
 
 from __future__ import annotations
@@ -25,7 +27,7 @@ from dataclasses import dataclass
 from typing import Any, ClassVar
 
 from interpose import pipeline as core
-from interpose.pipeline import NO_LIMIT, HookFailed, InvalidResult, OnError
+from interpose.pipeline import NO_LIMIT, HookFailed, InvalidResult, OnError, require_async
 
 from mitm_proxy.errors import StartupError
 from mitm_proxy.http.flow import Flow
@@ -47,6 +49,9 @@ __all__ = [
 log = logging.getLogger(__name__)
 
 HOOK_TIMEOUT = 5.0  # seconds: middleware.hook_timeout_ms's default
+
+# The hooks that are awaited: each must be an async def (0011). applies_to is a plain call.
+ASYNC_HOOKS = ("on_request", "on_request_chunk", "on_response", "on_response_chunk", "on_done")
 
 
 class Action(enum.Enum):
@@ -129,10 +134,16 @@ class Entry:
 class Outcome:
     action: Action
     by: str | None = None  # the middleware that stopped or denied
+    # A DENY because a fail-closed middleware failed, not because it decided to (0011).
+    failed: bool = False
 
 
 def _core_entry(name: str, middleware: Middleware) -> core.Entry[Middleware]:
-    """interpose's entry: the registry name, and the middleware's on_error and timeout."""
+    """interpose's entry: the registry name, and the middleware's on_error and timeout.
+
+    Raises ValueError for a wrong on_error or timeout, TypeError for a sync hook (0011).
+    """
+    require_async(middleware, ASYNC_HOOKS, name=name)
     try:
         return core.Entry.of(middleware, name=name)
     except ValueError as e:
@@ -182,9 +193,10 @@ class FlowPipeline:
     """The pipeline for one flow: what applies, and what has failed so far.
 
     Thin wrappers over interpose's ``Run``. A middleware with ``on_error = "fail"`` that fails
-    makes ``run_request``/``run_response`` return a DENY by it (403 and 502 in the exchange,
-    as for a deliberate DENY), and makes a chunk hook raise ``HookFailed`` for the exchange to
-    answer the same way. Under the default policy nothing raises.
+    makes ``run_request``/``run_response`` return a DENY by it with ``failed=True`` (a 502
+    ``middleware <name> failed`` in the exchange, in both phases; 0011), and makes a chunk hook
+    raise ``HookFailed`` for the exchange to answer the same way. Under the default policy
+    nothing raises.
     """
 
     def __init__(
@@ -274,7 +286,7 @@ class FlowPipeline:
                     hook, lambda mw: invoke(mw, self.flow), entries=entries, until=_stops
                 )
         except HookFailed as e:
-            return Outcome(Action.DENY, e.failure.middleware)
+            return Outcome(Action.DENY, e.failure.middleware, failed=True)
         if stopped is None:
             return Outcome(Action.CONTINUE)
         return Outcome(stopped.result, stopped.entry.name)
@@ -292,7 +304,7 @@ class FlowPipeline:
 
     async def run_request(self) -> Outcome:
         if self.denied_by is not None:
-            return Outcome(Action.DENY, self.denied_by)
+            return Outcome(Action.DENY, self.denied_by, failed=True)
         if self.request_skipped:
             return Outcome(Action.CONTINUE)
         return await self._phase("on_request", None)
@@ -367,7 +379,7 @@ def load_middleware(
             raise StartupError(f"middleware {name!r}: {ref} is not a Middleware")
         try:
             _core_entry(name, obj)
-        except ValueError as e:
+        except (TypeError, ValueError) as e:
             raise StartupError(str(e)) from e
         loaded.append((name, obj))
     return loaded

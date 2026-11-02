@@ -48,7 +48,7 @@ The name (`block-ads`) is what appears in logs and metrics. The order of `chain`
 | `on_response_chunk(flow, chunk, is_last)` | For each chunk of a response that may have a body | `None` or replacement `bytes` |
 | `on_done(flow)` | Once, after the flow has ended, however it ended | nothing (observe only) |
 
-Every hook except `applies_to` is `async`. In this version bodies are buffered, so a chunk hook is called once per body, with the whole body and `is_last=True`. Write chunk hooks as if chunks could be partial: a streaming release will call them per chunk without changing the signature.
+Every hook except `applies_to` must be an `async def`: a plain `def` hook stops startup (or refuses a new configuration) with `middleware '<name>': <hook> must be an async function` (design 0011). In this version bodies are buffered, so a chunk hook is called once per body, with the whole body and `is_last=True`. Write chunk hooks as if chunks could be partial: a streaming release will call them per chunk without changing the signature.
 
 ## Actions
 
@@ -117,7 +117,7 @@ class SlowOrigins(Middleware):
 |---|---|---|
 | `"origin"` | `None` | The origin's status |
 | `"local"` | The middleware that answered | Its status |
-| `"denied"` | The middleware that denied | `403` (request) or `502` (response) |
+| `"denied"` | The middleware that denied, or the fail-closed middleware that failed | `403` (request deny), `502` (response deny, or a fail-closed failure in either phase) |
 | `"error"` | `None`, or the middleware that stopped without a response | `502` or `504` |
 | `"aborted"` | `None` | The status already sent, or `None` |
 
@@ -160,7 +160,9 @@ class Audit(Middleware):
 
 ## Rules
 
-- **Never block the event loop.** No `time.sleep`, blocking I/O or long CPU work in a hook: the whole proxy waits. A hook that blocks can't be timed out.
+- **Never block the event loop.** No `time.sleep`, blocking I/O or long CPU work in a hook: the whole proxy waits. A timeout can't interrupt synchronous code, so a hook that blocks can't be timed out. Move blocking or CPU-bound work off the loop with `await asyncio.to_thread(...)`; the timeout then applies to the `await`, but the thread itself keeps running after a timeout until it finishes.
+- **The timeout is per hook call.** `middleware.hook_timeout_ms` (5 s by default) or your `timeout` bounds each call: every `on_request`, every `on_response`, every chunk-hook call and `on_done`, each on its own. It isn't a budget for the whole flow.
+- **Be cancel-safe.** A timeout cancels your hook at whatever `await` it's in. Release what you hold in `try`/`finally` or `async with`, and never swallow `asyncio.CancelledError` (no bare `except BaseException:` that carries on): re-raise it, or the pipeline can't stop your hook.
 - **Expect to fail safely.** A hook that raises, returns the wrong type, or runs longer than `middleware.hook_timeout_ms`, is logged with your middleware's name and the flow ID, and your middleware is skipped for the rest of that flow. The traffic carries on without it, unless your middleware fails closed (below).
 - **`on_error` and `timeout` are reserved attributes.** The pipeline reads them from your middleware (design 0010); don't use the names for anything else, such as an HTTP client's timeout. The middleware's name is always its key in `middleware.available`, whatever a `name` attribute says.
 
@@ -177,7 +179,7 @@ class Blocklist(Middleware):
     timeout = 0.5  # seconds per hook call, instead of middleware.hook_timeout_ms
 ```
 
-- **`on_error = "fail"`:** when one of its hooks raises, times out or returns the wrong type, the flow is denied by it, exactly as if it had returned `DENY` in that phase: `403 denied by middleware <name>` from `applies_to`, `on_request` or `on_request_chunk`; `502` from `on_response` or `on_response_chunk`. The failure is still logged and counted in `mitm_proxy_middleware_failures_total`. If `applies_to` is the hook that failed, no middleware has been selected yet, so none gets `on_done` for that flow. Bodies over `body.max_buffer_bytes` still skip the body hooks, but a failed `applies_to` denies them too.
+- **`on_error = "fail"`:** when one of its hooks raises, times out or returns the wrong type, the flow ends with `502 middleware <name> failed`, in either phase (`applies_to`, `on_request`, `on_request_chunk`, `on_response` or `on_response_chunk`; design 0011). The body names the middleware and nothing else: never the exception or a value. A deliberate `DENY` from it is unchanged (`403` on the request), so a `403` is always a decision and a `502 middleware <name> failed` is always a crash. The outcome is `denied:<name>`, status `502`. The failure is still logged and counted in `mitm_proxy_middleware_failures_total`. If `applies_to` is the hook that failed, no middleware has been selected yet, so none gets `on_done` for that flow. Bodies over `body.max_buffer_bytes` still skip the body hooks, but a failed `applies_to` denies them too.
 - **`on_done` always fails open,** whatever `on_error` says: the flow has already ended.
 - **`timeout`:** seconds (a number above 0) for each of its hook calls; `NO_LIMIT` for none. A wrong value for either attribute stops startup with a one-line error naming the middleware.
 - **Narrow with `applies_to`.** Every flow a middleware applies to is buffered, and a middleware with a chunk hook makes its flows' bodies go out chunked. Some origins refuse chunked uploads (`411`).
