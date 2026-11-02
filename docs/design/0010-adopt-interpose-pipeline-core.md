@@ -22,7 +22,7 @@ traffic it should stop gets through.
 Constraints:
 
 - **No observable change by default.** Every middleware that doesn't opt in behaves as today: the
-  statuses, the outcome, the log lines (one wording aside, below), the metrics and the timings.
+  statuses, the outcome, the log lines (two edge cases aside, below), the metrics and the timings.
 - `Middleware`, `Action`, `Outcome`, `load_middleware`, `Pipeline` and `FlowPipeline`'s public methods
   and attributes stay, so `exchange.py`'s phase calls and the existing tests don't change.
 - The pin is already v0.1.2 (0009); no new dependency.
@@ -44,8 +44,10 @@ Constraints:
    `run_done`, `applies`, `mutation_capable`, `request_skipped`, `response_skipped`, `failed`, `entries`
    and `on_failure`, as thin wrappers over a `Run` started with
    `select=applies_to`, `timings=flow.timings.middleware` and `state=flow.metadata`:
-   - `run_request`: `before("on_request", ...)` until a result that isn't `None` or `CONTINUE`, with
-     `valid` = an `Action` or `None`; a `Stopped` becomes `Outcome(action, by=name)`.
+   - `run_request`: `before("on_request", ...)` until a result that isn't `None` or `CONTINUE`; a
+     result that isn't an `Action` or `None` raises an `InvalidResult` inside the guard (the same check
+     as interpose's `valid`, done in the call so the log can name the type); a `Stopped` becomes
+     `Outcome(action, by=name)`.
    - `run_response`: `each("on_response", ...)` over `after_pairs()`, so `after_local=False` is what
      keeps `on_response` off local answers, not only `exchange.py`'s early return.
    - chunk hooks: `fold(..., keep_none=True)`; each call converts the result to `bytes` (a `bytearray` or
@@ -90,7 +92,8 @@ Each answered with the option that keeps today's behaviour:
 
 | | Before | Now |
 |---|---|---|
-| An invalid `on_request`/`on_response` result in the log | its `repr` | its type name: `middleware 'x': on_request returned str, not an Action (flow …)` (never log values) |
+| An invalid `on_request`/`on_response` result in the log | its `repr`: `returned 'deny' from on_request` | its type name: `returned 'str' from on_request` (never log values; chunk hooks already logged the type) |
+| A hook that raises `TimeoutError` itself (its own network call) | logged as `timed out … after 5.0s` | logged as `failed in …` with its traceback: only the hook timeout counts as a timeout (interpose's guard). Skipped and counted the same |
 | Hook timing clock | `time.monotonic()` | `time.perf_counter()` (only differences are used; the values are the same kind) |
 | A middleware with an `on_error` or `timeout` class attribute | ignored | its failure policy, or a startup error if the value is wrong |
 | A middleware with `on_error = "fail"` that fails | n/a | the flow is denied by it (decision 4) |

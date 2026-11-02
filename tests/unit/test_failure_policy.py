@@ -205,7 +205,34 @@ async def test_a_number_from_a_chunk_hook_is_a_failure_not_zero_bytes(
     run = Pipeline([("number", Number()), ("upper", Upper())]).start(make_flow())
     assert await run.run_request_chunk(b"x", True) == b"x"
     assert run.failed == {"number"}
-    assert "returned int" in caplog.text and "not bytes or None" in caplog.text
+    assert "'number' returned 'int' from on_request_chunk, not bytes or None" in caplog.text
+
+
+async def test_an_invalid_phase_result_is_logged_by_type_never_value(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class Wrong(Middleware):
+        async def on_request(self, flow: Flow) -> Action:
+            return "secret-value"  # type: ignore[return-value]  # the mistake under test
+
+    run = Pipeline([("wrong", Wrong())]).start(make_flow())
+    assert (await run.run_request()).action is Action.CONTINUE
+    assert "'wrong' returned 'str' from on_request, not an Action" in caplog.text
+    assert "secret-value" not in caplog.text
+
+
+async def test_a_timeout_error_the_hook_raises_is_a_failure_not_a_timeout(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class OwnTimeout(Middleware):
+        async def on_request(self, flow: Flow) -> Action:
+            raise TimeoutError("its own upstream call")
+
+    failures: list[str] = []
+    run = Pipeline([("own", OwnTimeout())]).start(make_flow(), failures.append)
+    assert (await run.run_request()).action is Action.CONTINUE
+    assert failures == ["own"] and run.failed == {"own"}
+    assert "'own' failed in on_request" in caplog.text and "timed out" not in caplog.text
 
 
 async def test_on_response_reaches_what_ran_on_request_and_has_not_failed() -> None:

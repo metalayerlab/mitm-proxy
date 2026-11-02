@@ -228,10 +228,15 @@ class FlowPipeline:
                 failure.timeout,
                 flow_id,
             )
-        elif isinstance(failure.error, InvalidResult):
-            # The type, never the value (interpose names only the type).
+        elif isinstance(failure.error, _WrongType):
+            # Today's wording, with the type, never the value.
             log.error(
-                "middleware %r: %s, not %s (flow %s)", name, failure.error, _EXPECTED[hook], flow_id
+                "middleware %r returned %r from %s, not %s (flow %s)",
+                name,
+                failure.error.type_name,
+                hook,
+                _EXPECTED[hook],
+                flow_id,
             )
         else:
             log.error(
@@ -255,21 +260,18 @@ class FlowPipeline:
         return failed | {self.denied_by} if self.denied_by is not None else failed
 
     async def _phase(self, hook: str, entries: Sequence[core.Entry[Middleware]] | None) -> Outcome:
-        def invoke(mw: Middleware, flow: Flow) -> Any:
-            return getattr(mw, hook)(flow)
+        async def invoke(mw: Middleware, flow: Flow) -> Action | None:
+            result = await getattr(mw, hook)(flow)
+            if result is not None and not isinstance(result, Action):
+                raise _WrongType(hook, result)  # a failure inside the guard, like a raise
+            return result
 
         try:
             if entries is None:
-                stopped = await self._run.before(
-                    hook, self.flow, invoke, until=_stops, valid=_is_action
-                )
+                stopped = await self._run.before(hook, self.flow, invoke, until=_stops)
             else:
                 stopped = await self._run.each(
-                    hook,
-                    lambda mw: invoke(mw, self.flow),
-                    entries=entries,
-                    until=_stops,
-                    valid=_is_action,
+                    hook, lambda mw: invoke(mw, self.flow), entries=entries, until=_stops
                 )
         except HookFailed as e:
             return Outcome(Action.DENY, e.failure.middleware)
@@ -283,7 +285,7 @@ class FlowPipeline:
             if result is None:
                 return None
             if not isinstance(result, bytes | bytearray | memoryview):
-                raise InvalidResult(f"{hook} returned {type(result).__name__}")
+                raise _WrongType(hook, result)
             return bytes(result)  # every middleware gets bytes from the one before
 
         return await self._run.fold(hook, chunk, invoke, keep_none=True)
@@ -322,6 +324,14 @@ class FlowPipeline:
         await self._run.observe("on_done", lambda mw: mw.on_done(self.flow))
 
 
+class _WrongType(InvalidResult):
+    """A hook's result of the wrong type; holds the type's name, never the value."""
+
+    def __init__(self, hook: str, result: object) -> None:
+        self.type_name = type(result).__name__
+        super().__init__(f"{hook} returned {self.type_name}")
+
+
 _EXPECTED = {
     "on_request": "an Action",
     "on_response": "an Action",
@@ -332,10 +342,6 @@ _EXPECTED = {
 
 def _stops(result: Any) -> bool:
     return result is not None and result is not Action.CONTINUE
-
-
-def _is_action(result: Any) -> bool:
-    return result is None or isinstance(result, Action)
 
 
 def load_middleware(
