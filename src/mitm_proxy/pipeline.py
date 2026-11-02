@@ -232,7 +232,18 @@ class FlowPipeline:
     def _failed(self, failure: core.Failure) -> None:
         """Log one failure with the flow ID, and count it."""
         name, hook, flow_id = failure.middleware, failure.hook, self.flow.id
-        if failure.timed_out:
+        if failure.timed_out and failure.late is not None:
+            # Its result came back after the limit (interpose 0005): "overran" means it ran
+            # synchronous code past the deadline, "swallowed" that it caught the cancellation.
+            log.error(
+                "middleware %r timed out in %s after %.1fs, late: %s (flow %s)",
+                name,
+                hook,
+                failure.timeout,
+                failure.late,
+                flow_id,
+            )
+        elif failure.timed_out:
             log.error(
                 "middleware %r timed out in %s after %.1fs (flow %s)",
                 name,

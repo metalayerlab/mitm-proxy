@@ -2,6 +2,8 @@
 (design 0010)."""
 
 import asyncio
+import contextlib
+import time
 from pathlib import Path
 from typing import ClassVar
 
@@ -406,3 +408,39 @@ async def test_a_reload_with_a_sync_hook_is_refused_and_keeps_the_old_pipeline(
     assert proxy.snapshot is before and proxy.snapshot.pipeline.names == ["sample"]
     assert proxy.metrics.config_applies.values == {("applied",): 1.0}
     await proxy.stop()
+
+
+async def test_a_hook_that_blocks_past_its_timeout_fails_as_overran(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class Blocks(Middleware):
+        timeout: ClassVar[float | None] = 0.01
+
+        async def on_request(self, flow: Flow) -> Action:
+            time.sleep(0.05)  # the mistake under test: blocks the loop
+            return Action.DENY
+
+    failures: list[str] = []
+    run = Pipeline([("blocks", Blocks())]).start(make_flow(), failures.append)
+    # Its late DENY isn't accepted: a timeout failure, skipped by default (interpose 0005).
+    assert (await run.run_request()).action is Action.CONTINUE
+    assert failures == ["blocks"]
+    assert "'blocks' timed out in on_request after 0.0s, late: overran" in caplog.text
+
+
+async def test_a_hook_that_swallows_its_cancellation_fails_as_swallowed(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    class Swallows(Middleware):
+        on_error: ClassVar[OnError | None] = "fail"
+        timeout: ClassVar[float | None] = 0.01
+
+        async def on_request(self, flow: Flow) -> Action:
+            # The mistake under test: never swallow the cancellation.
+            with contextlib.suppress(asyncio.CancelledError):
+                await asyncio.sleep(1)
+            return Action.CONTINUE
+
+    run = Pipeline([("swallows", Swallows())]).start(make_flow())
+    assert await run.run_request() == RunOutcome(Action.DENY, "swallows", failed=True)
+    assert "'swallows' timed out in on_request after 0.0s, late: swallowed" in caplog.text
