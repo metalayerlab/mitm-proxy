@@ -42,3 +42,4 @@ the team (and its AI assistants) should know at a glance.
 - Calling `on_done` from background tasks: hooks are never `create_task`ed (design 0006).
 - Depending on interpose through `[tool.uv.sources]`: the published metadata would name a bare `interpose`, which pip resolves from PyPI (design 0008).
 - Secrets as plain `str` fields, masked only where displayed: every new use site has to remember; `Secret` makes a slip print `********` (design 0008).
+- Pre-registering every metric label combination at zero: adds series and changes `/metrics` output (design 0009).

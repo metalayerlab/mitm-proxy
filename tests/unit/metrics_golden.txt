@@ -1,0 +1,209 @@
+# HELP mitm_proxy_build_info Always 1; the version label.
+# TYPE mitm_proxy_build_info gauge
+mitm_proxy_build_info{version="1.2.3"} 1
+# HELP mitm_proxy_client_connections Client connections open now.
+# TYPE mitm_proxy_client_connections gauge
+mitm_proxy_client_connections 1
+# HELP mitm_proxy_flows_total Flows handled, by type: http (intercepted HTTPS), plain_http, websocket.
+# TYPE mitm_proxy_flows_total counter
+mitm_proxy_flows_total{type="http"} 2
+mitm_proxy_flows_total{type="plain_http"} 1
+mitm_proxy_flows_total{type="websocket"} 1
+# HELP mitm_proxy_tunnels_total CONNECT tunnels relayed without interception, by reason.
+# TYPE mitm_proxy_tunnels_total counter
+mitm_proxy_tunnels_total{reason="not_tls"} 1
+mitm_proxy_tunnels_total{reason="out_of_scope"} 1
+mitm_proxy_tunnels_total{reason="sni_out_of_scope"} 1
+# HELP mitm_proxy_middleware_failures_total Middleware hooks that raised or timed out, by middleware.
+# TYPE mitm_proxy_middleware_failures_total counter
+mitm_proxy_middleware_failures_total{middleware="audit"} 1
+mitm_proxy_middleware_failures_total{middleware="block"} 1
+# HELP mitm_proxy_oversize_passthrough_total Bodies over body.max_buffer_bytes, streamed through without middleware.
+# TYPE mitm_proxy_oversize_passthrough_total counter
+mitm_proxy_oversize_passthrough_total{direction="request"} 1
+mitm_proxy_oversize_passthrough_total{direction="response"} 1
+# HELP mitm_proxy_proxy_auth_failures_total Requests refused with 407 (missing or wrong proxy credentials).
+# TYPE mitm_proxy_proxy_auth_failures_total counter
+mitm_proxy_proxy_auth_failures_total 1
+# HELP mitm_proxy_upstream_connections Pooled upstream connections, by protocol.
+# TYPE mitm_proxy_upstream_connections gauge
+mitm_proxy_upstream_connections{protocol="h2"} 3
+mitm_proxy_upstream_connections{protocol="http/1.1"} 1
+# HELP mitm_proxy_config_applies_total Configurations applied, by result.
+# TYPE mitm_proxy_config_applies_total counter
+mitm_proxy_config_applies_total{result="applied"} 1
+# HELP mitm_proxy_certificate_expiry_timestamp_seconds When a certificate expires (Unix time), by kind.
+# TYPE mitm_proxy_certificate_expiry_timestamp_seconds gauge
+mitm_proxy_certificate_expiry_timestamp_seconds{kind="ca"} 1798761600.5
+# HELP mitm_proxy_flow_duration_seconds Intercepted HTTP flows, from the request arriving to the last byte sent, by outcome.
+# TYPE mitm_proxy_flow_duration_seconds histogram
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="0.005"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="0.01"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="0.025"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="0.05"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="0.1"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="0.25"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="0.5"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="1.0"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="2.5"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="5.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="10.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="30.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="60.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="aborted",le="+Inf"} 1
+mitm_proxy_flow_duration_seconds_sum{outcome="aborted"} 2
+mitm_proxy_flow_duration_seconds_count{outcome="aborted"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="0.005"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="0.01"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="0.025"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="0.05"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="0.1"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="0.25"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="0.5"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="1.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="2.5"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="5.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="10.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="30.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="60.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="denied",le="+Inf"} 1
+mitm_proxy_flow_duration_seconds_sum{outcome="denied"} 0.05
+mitm_proxy_flow_duration_seconds_count{outcome="denied"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="0.005"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="0.01"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="0.025"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="0.05"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="0.1"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="0.25"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="0.5"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="1.0"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="2.5"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="5.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="10.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="30.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="60.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="error",le="+Inf"} 1
+mitm_proxy_flow_duration_seconds_sum{outcome="error"} 1.5
+mitm_proxy_flow_duration_seconds_count{outcome="error"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="0.005"} 0
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="0.01"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="0.025"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="0.05"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="0.1"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="0.25"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="0.5"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="1.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="2.5"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="5.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="10.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="30.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="60.0"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="local",le="+Inf"} 1
+mitm_proxy_flow_duration_seconds_sum{outcome="local"} 0.01
+mitm_proxy_flow_duration_seconds_count{outcome="local"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="0.005"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="0.01"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="0.025"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="0.05"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="0.1"} 1
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="0.25"} 2
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="0.5"} 2
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="1.0"} 2
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="2.5"} 2
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="5.0"} 2
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="10.0"} 2
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="30.0"} 2
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="60.0"} 2
+mitm_proxy_flow_duration_seconds_bucket{outcome="origin",le="+Inf"} 3
+mitm_proxy_flow_duration_seconds_sum{outcome="origin"} 75.203
+mitm_proxy_flow_duration_seconds_count{outcome="origin"} 3
+# HELP mitm_proxy_upstream_connect_seconds Waiting for an upstream connection, by whether a pooled one was reused.
+# TYPE mitm_proxy_upstream_connect_seconds histogram
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="0.005"} 0
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="0.01"} 0
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="0.025"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="0.05"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="0.1"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="0.25"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="0.5"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="1.0"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="2.5"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="5.0"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="10.0"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="30.0"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="60.0"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="false",le="+Inf"} 1
+mitm_proxy_upstream_connect_seconds_sum{reused="false"} 0.02
+mitm_proxy_upstream_connect_seconds_count{reused="false"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="0.005"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="0.01"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="0.025"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="0.05"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="0.1"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="0.25"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="0.5"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="1.0"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="2.5"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="5.0"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="10.0"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="30.0"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="60.0"} 1
+mitm_proxy_upstream_connect_seconds_bucket{reused="true",le="+Inf"} 1
+mitm_proxy_upstream_connect_seconds_sum{reused="true"} 0.0004
+mitm_proxy_upstream_connect_seconds_count{reused="true"} 1
+# HELP mitm_proxy_origin_ttfb_seconds The origin's share: from the request being sent to its response headers.
+# TYPE mitm_proxy_origin_ttfb_seconds histogram
+mitm_proxy_origin_ttfb_seconds_bucket{le="0.005"} 0
+mitm_proxy_origin_ttfb_seconds_bucket{le="0.01"} 0
+mitm_proxy_origin_ttfb_seconds_bucket{le="0.025"} 0
+mitm_proxy_origin_ttfb_seconds_bucket{le="0.05"} 0
+mitm_proxy_origin_ttfb_seconds_bucket{le="0.1"} 0
+mitm_proxy_origin_ttfb_seconds_bucket{le="0.25"} 1
+mitm_proxy_origin_ttfb_seconds_bucket{le="0.5"} 1
+mitm_proxy_origin_ttfb_seconds_bucket{le="1.0"} 1
+mitm_proxy_origin_ttfb_seconds_bucket{le="2.5"} 1
+mitm_proxy_origin_ttfb_seconds_bucket{le="5.0"} 1
+mitm_proxy_origin_ttfb_seconds_bucket{le="10.0"} 1
+mitm_proxy_origin_ttfb_seconds_bucket{le="30.0"} 1
+mitm_proxy_origin_ttfb_seconds_bucket{le="60.0"} 1
+mitm_proxy_origin_ttfb_seconds_bucket{le="+Inf"} 1
+mitm_proxy_origin_ttfb_seconds_sum 0.125
+mitm_proxy_origin_ttfb_seconds_count 1
+# HELP mitm_proxy_middleware_duration_seconds Time each middleware spent in its hooks for one flow, on_done included.
+# TYPE mitm_proxy_middleware_duration_seconds histogram
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="0.0001"} 1
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="0.00025"} 1
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="0.0005"} 1
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="0.001"} 1
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="0.0025"} 1
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="0.005"} 1
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="0.01"} 1
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="0.025"} 1
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="0.05"} 1
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="0.1"} 1
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="0.25"} 1
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="0.5"} 2
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="1.0"} 2
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="2.5"} 2
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="5.0"} 2
+mitm_proxy_middleware_duration_seconds_bucket{middleware="audit",le="+Inf"} 2
+mitm_proxy_middleware_duration_seconds_sum{middleware="audit"} 0.30005
+mitm_proxy_middleware_duration_seconds_count{middleware="audit"} 2
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="0.0001"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="0.00025"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="0.0005"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="0.001"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="0.0025"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="0.005"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="0.01"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="0.025"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="0.05"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="0.1"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="0.25"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="0.5"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="1.0"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="2.5"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="5.0"} 0
+mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="+Inf"} 1
+mitm_proxy_middleware_duration_seconds_sum{middleware="block"} 6
+mitm_proxy_middleware_duration_seconds_count{middleware="block"} 1

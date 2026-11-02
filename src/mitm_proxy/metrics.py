@@ -1,81 +1,21 @@
-"""Prometheus text exposition, for ``GET /metrics``.
+"""The proxy's Prometheus metrics, for ``GET /metrics``.
 
-Counters, gauges and classic histograms: few enough that the format is written
-here rather than taking a dependency. Every label has a small, fixed set of
-values: the intercepted host is never a label (it would make the series count
-unbounded).
+The metric types and the text format come from interpose (design 0009); this module says which
+metrics exist, their help, buckets and labels. Every label takes its values from a set declared
+here, up front, so the intercepted host can never become a label (it would make the series count
+unbounded): a value outside the set is a ``ValueError`` at the call that used it. The one set that
+grows is ``middleware``, declared from the configuration's registry when a snapshot is built
+(``ProxyServer._build``), never from traffic.
 """
 
 from __future__ import annotations
 
-import bisect
-from collections.abc import Callable, Mapping
-from typing import TYPE_CHECKING
+from collections.abc import Iterable
 
-if TYPE_CHECKING:
-    from mitm_proxy.http.flow import Flow
+from interpose.metrics import Counter, Gauge, Histogram, Label, Metric, Registry
 
-LabelValues = tuple[str, ...]
-
-
-def _escape(value: str) -> str:
-    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
-
-
-def _format(name: str, labels: tuple[str, ...], values: LabelValues, value: float) -> str:
-    if labels:
-        pairs = ",".join(f'{k}="{_escape(v)}"' for k, v in zip(labels, values, strict=True))
-        name = f"{name}{{{pairs}}}"
-    number = repr(float(value)) if value != int(value) else str(int(value))
-    return f"{name} {number}"
-
-
-class Metric:
-    def __init__(self, name: str, help: str, kind: str, labels: tuple[str, ...] = ()) -> None:
-        self.name = name
-        self.help = help
-        self.kind = kind
-        self.labels = labels
-        self.values: dict[LabelValues, float] = {}
-
-    def samples(self) -> Mapping[LabelValues, float]:
-        return self.values
-
-    def render(self) -> list[str]:
-        lines = [f"# HELP {self.name} {self.help}", f"# TYPE {self.name} {self.kind}"]
-        for values, value in sorted(self.samples().items()):
-            lines.append(_format(self.name, self.labels, values, value))
-        return lines
-
-
-class Counter(Metric):
-    def __init__(self, name: str, help: str, labels: tuple[str, ...] = ()) -> None:
-        super().__init__(name, help, "counter", labels)
-
-    def inc(self, *values: str, amount: float = 1.0) -> None:
-        self.values[values] = self.values.get(values, 0.0) + amount
-
-
-class Gauge(Metric):
-    def __init__(
-        self,
-        name: str,
-        help: str,
-        labels: tuple[str, ...] = (),
-        read: Callable[[], Mapping[LabelValues, float]] | None = None,
-    ) -> None:
-        super().__init__(name, help, "gauge", labels)
-        self.read = read  # if set, the samples come from here, not from set()/add()
-
-    def set(self, value: float, *values: str) -> None:
-        self.values[values] = value
-
-    def add(self, amount: float, *values: str) -> None:
-        self.values[values] = self.values.get(values, 0.0) + amount
-
-    def samples(self) -> Mapping[LabelValues, float]:
-        return self.read() if self.read is not None else self.values
-
+from mitm_proxy.classify import Decision
+from mitm_proxy.http.flow import OUTCOME_KINDS, PLAIN_HTTP, Flow, FlowType
 
 # Network-scale times (Prometheus's defaults, plus 30 s and 60 s), and middleware hook times
 # (100 µs up to the default hook timeout). Fixed: changing them breaks dashboards (0007).
@@ -98,134 +38,130 @@ MIDDLEWARE_BUCKETS = (
     5,
 )
 
-
-def _le(bound: float) -> str:
-    return repr(float(bound))
-
-
-class Histogram(Metric):
-    """A classic histogram: cumulative buckets, a sum and a count, per label set."""
-
-    def __init__(
-        self, name: str, help: str, buckets: tuple[float, ...], labels: tuple[str, ...] = ()
-    ) -> None:
-        super().__init__(name, help, "histogram", labels)
-        self.buckets = tuple(sorted(buckets))
-        # per label set: counts per bucket (the last is +Inf, not cumulative), sum, count
-        self.series: dict[LabelValues, tuple[list[int], list[float]]] = {}
-
-    def observe(self, value: float, *values: str) -> None:
-        counts, totals = self.series.setdefault(values, ([0] * (len(self.buckets) + 1), [0.0]))
-        counts[bisect.bisect_left(self.buckets, value)] += 1  # le is inclusive
-        totals[0] += value
-
-    def render(self) -> list[str]:
-        lines = [f"# HELP {self.name} {self.help}", f"# TYPE {self.name} {self.kind}"]
-        labels = (*self.labels, "le")
-        for values, (counts, totals) in sorted(self.series.items()):
-            running = 0
-            bounds = [*map(_le, self.buckets), "+Inf"]
-            for bound, count in zip(bounds, counts, strict=True):
-                running += count
-                lines.append(_format(f"{self.name}_bucket", labels, (*values, bound), running))
-            lines.append(_format(f"{self.name}_sum", self.labels, values, totals[0]))
-            lines.append(_format(f"{self.name}_count", self.labels, values, running))
-        return lines
+# The values each fixed label may take.
+FLOW_TYPES = (*(t.value for t in FlowType), PLAIN_HTTP)
+TUNNEL_REASONS = tuple(d.value for d in Decision)
+DIRECTIONS = ("request", "response")
+UPSTREAM_PROTOCOLS = ("http/1.1", "h2")  # what ConnectionPool.counts() reports
+CONFIG_RESULTS = ("applied",)
+CERTIFICATE_KINDS = ("ca",)
+REUSED = ("true", "false")
 
 
 class Metrics:
-    """Every metric the proxy exports."""
+    """Every metric the proxy exports, in the order /metrics lists them."""
 
     def __init__(self, version: str) -> None:
-        self.build_info = Gauge(
-            "mitm_proxy_build_info", "Always 1; the version label.", ("version",)
+        # Shared by the failures counter and the duration histogram: one declare() covers both.
+        self.middleware = Label("middleware")
+        reg = self.registry = Registry()
+        self.build_info = reg.register(
+            Gauge(
+                "mitm_proxy_build_info",
+                "Always 1; the version label.",
+                (Label("version", (version,)),),
+            )
         )
         self.build_info.set(1, version)
-        self.client_connections = Gauge(
-            "mitm_proxy_client_connections", "Client connections open now."
+        self.client_connections = reg.register(
+            Gauge("mitm_proxy_client_connections", "Client connections open now.")
         )
         self.client_connections.set(0)
-        self.flows = Counter(
-            "mitm_proxy_flows_total",
-            "Flows handled, by type: http (intercepted HTTPS), plain_http, websocket.",
-            ("type",),
+        self.flows = reg.register(
+            Counter(
+                "mitm_proxy_flows_total",
+                "Flows handled, by type: http (intercepted HTTPS), plain_http, websocket.",
+                (Label("type", FLOW_TYPES),),
+            )
         )
-        self.tunnels = Counter(
-            "mitm_proxy_tunnels_total",
-            "CONNECT tunnels relayed without interception, by reason.",
-            ("reason",),
+        self.tunnels = reg.register(
+            Counter(
+                "mitm_proxy_tunnels_total",
+                "CONNECT tunnels relayed without interception, by reason.",
+                (Label("reason", TUNNEL_REASONS),),
+            )
         )
-        self.middleware_failures = Counter(
-            "mitm_proxy_middleware_failures_total",
-            "Middleware hooks that raised or timed out, by middleware.",
-            ("middleware",),
+        self.middleware_failures = reg.register(
+            Counter(
+                "mitm_proxy_middleware_failures_total",
+                "Middleware hooks that raised or timed out, by middleware.",
+                (self.middleware,),
+            )
         )
-        self.oversize_passthrough = Counter(
-            "mitm_proxy_oversize_passthrough_total",
-            "Bodies over body.max_buffer_bytes, streamed through without middleware.",
-            ("direction",),
+        self.oversize_passthrough = reg.register(
+            Counter(
+                "mitm_proxy_oversize_passthrough_total",
+                "Bodies over body.max_buffer_bytes, streamed through without middleware.",
+                (Label("direction", DIRECTIONS),),
+            )
         )
-        self.proxy_auth_failures = Counter(
-            "mitm_proxy_proxy_auth_failures_total",
-            "Requests refused with 407 (missing or wrong proxy credentials).",
+        self.proxy_auth_failures = reg.register(
+            Counter(
+                "mitm_proxy_proxy_auth_failures_total",
+                "Requests refused with 407 (missing or wrong proxy credentials).",
+            )
         )
-        self.upstream_connections = Gauge(
-            "mitm_proxy_upstream_connections",
-            "Pooled upstream connections, by protocol.",
-            ("protocol",),
+        self.upstream_connections = reg.register(
+            Gauge(
+                "mitm_proxy_upstream_connections",
+                "Pooled upstream connections, by protocol.",
+                (Label("protocol", UPSTREAM_PROTOCOLS),),
+            )
         )
-        self.config_applies = Counter(
-            "mitm_proxy_config_applies_total",
-            "Configurations applied, by result.",
-            ("result",),
+        self.config_applies = reg.register(
+            Counter(
+                "mitm_proxy_config_applies_total",
+                "Configurations applied, by result.",
+                (Label("result", CONFIG_RESULTS),),
+            )
         )
-        self.certificate_expiry = Gauge(
-            "mitm_proxy_certificate_expiry_timestamp_seconds",
-            "When a certificate expires (Unix time), by kind.",
-            ("kind",),
+        self.certificate_expiry = reg.register(
+            Gauge(
+                "mitm_proxy_certificate_expiry_timestamp_seconds",
+                "When a certificate expires (Unix time), by kind.",
+                (Label("kind", CERTIFICATE_KINDS),),
+            )
         )
         # Intercepted HTTP flows, observed when each ends (0007).
-        self.flow_duration = Histogram(
-            "mitm_proxy_flow_duration_seconds",
-            "Intercepted HTTP flows, from the request arriving to the last byte sent, by outcome.",
-            NETWORK_BUCKETS,
-            ("outcome",),
+        self.flow_duration = reg.register(
+            Histogram(
+                "mitm_proxy_flow_duration_seconds",
+                "Intercepted HTTP flows, from the request arriving to the last byte sent, "
+                "by outcome.",
+                NETWORK_BUCKETS,
+                (Label("outcome", OUTCOME_KINDS),),
+            )
         )
-        self.upstream_connect = Histogram(
-            "mitm_proxy_upstream_connect_seconds",
-            "Waiting for an upstream connection, by whether a pooled one was reused.",
-            NETWORK_BUCKETS,
-            ("reused",),
+        self.upstream_connect = reg.register(
+            Histogram(
+                "mitm_proxy_upstream_connect_seconds",
+                "Waiting for an upstream connection, by whether a pooled one was reused.",
+                NETWORK_BUCKETS,
+                (Label("reused", REUSED),),
+            )
         )
-        self.origin_ttfb = Histogram(
-            "mitm_proxy_origin_ttfb_seconds",
-            "The origin's share: from the request being sent to its response headers.",
-            NETWORK_BUCKETS,
+        self.origin_ttfb = reg.register(
+            Histogram(
+                "mitm_proxy_origin_ttfb_seconds",
+                "The origin's share: from the request being sent to its response headers.",
+                NETWORK_BUCKETS,
+            )
         )
-        self.middleware_duration = Histogram(
-            "mitm_proxy_middleware_duration_seconds",
-            "Time each middleware spent in its hooks for one flow, on_done included.",
-            MIDDLEWARE_BUCKETS,
-            ("middleware",),
+        self.middleware_duration = reg.register(
+            Histogram(
+                "mitm_proxy_middleware_duration_seconds",
+                "Time each middleware spent in its hooks for one flow, on_done included.",
+                MIDDLEWARE_BUCKETS,
+                (self.middleware,),
+            )
         )
 
+    def declare_middleware(self, names: Iterable[str]) -> None:
+        """Allow these middleware names as label values (the registry's, at build and reload)."""
+        self.middleware.declare(*names)
+
     def all(self) -> list[Metric]:
-        return [
-            self.build_info,
-            self.client_connections,
-            self.flows,
-            self.tunnels,
-            self.middleware_failures,
-            self.oversize_passthrough,
-            self.proxy_auth_failures,
-            self.upstream_connections,
-            self.config_applies,
-            self.certificate_expiry,
-            self.flow_duration,
-            self.upstream_connect,
-            self.origin_ttfb,
-            self.middleware_duration,
-        ]
+        return list(self.registry)
 
     def observe_flow(self, flow: Flow) -> None:
         """The histograms' share of one ended, intercepted HTTP flow (0007)."""
@@ -240,7 +176,4 @@ class Metrics:
             self.middleware_duration.observe(seconds, name)
 
     def render(self) -> str:
-        lines: list[str] = []
-        for metric in self.all():
-            lines.extend(metric.render())
-        return "\n".join(lines) + "\n"
+        return self.registry.render()

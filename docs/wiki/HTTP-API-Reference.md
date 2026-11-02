@@ -45,7 +45,7 @@ The hash changes when any setting changes, except secrets, which count only as s
 
 ### `GET /metrics`
 
-Prometheus text format (`text/plain; version=0.0.4`). No metric is labelled with a hostname.
+Prometheus text format (`text/plain; version=0.0.4`). No metric is labelled with a hostname: every label takes its values from a set the proxy declares up front (design 0009), and the `middleware` label from the names in `middleware.available`.
 
 | Metric | Type | Labels |
 |---|---|---|
@@ -53,16 +53,16 @@ Prometheus text format (`text/plain; version=0.0.4`). No metric is labelled with
 | `mitm_proxy_client_connections` | gauge | |
 | `mitm_proxy_flows_total` | counter | `type`: `http` (intercepted HTTPS), `plain_http`, `websocket` |
 | `mitm_proxy_tunnels_total` | counter | `reason`: `out_of_scope`, `not_tls`, `sni_out_of_scope` |
-| `mitm_proxy_middleware_failures_total` | counter | `middleware` |
+| `mitm_proxy_middleware_failures_total` | counter | `middleware`: a name from `middleware.available` |
 | `mitm_proxy_oversize_passthrough_total` | counter | `direction`: `request`, `response` |
 | `mitm_proxy_proxy_auth_failures_total` | counter | |
-| `mitm_proxy_upstream_connections` | gauge | `protocol` |
-| `mitm_proxy_config_applies_total` | counter | `result` |
+| `mitm_proxy_upstream_connections` | gauge | `protocol`: `http/1.1`, `h2` |
+| `mitm_proxy_config_applies_total` | counter | `result`: `applied` |
 | `mitm_proxy_certificate_expiry_timestamp_seconds` | gauge | `kind`: `ca` |
 | `mitm_proxy_flow_duration_seconds` | histogram | `outcome`: `origin`, `local`, `denied`, `error`, `aborted` |
 | `mitm_proxy_upstream_connect_seconds` | histogram | `reused`: `true`, `false` |
 | `mitm_proxy_origin_ttfb_seconds` | histogram | |
-| `mitm_proxy_middleware_duration_seconds` | histogram | `middleware` |
+| `mitm_proxy_middleware_duration_seconds` | histogram | `middleware`: a name from `middleware.available` |
 
 The four histograms cover intercepted HTTP flows only (not WebSockets, not relayed traffic), observed when each flow ends, and are always on. They measure the same things as the access log's `total`, `connect`, `ttfb` and `mw` (see [In-Depth Configuration](In-Depth-Configuration#the-access-log)). The middleware histogram is the one place that includes `on_done` time. Buckets are fixed: 5 ms to 60 s for the first three, 100 µs to 5 s for middleware.
 

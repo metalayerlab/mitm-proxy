@@ -282,6 +282,40 @@ async def test_status_apply_and_hash(tmp_path: Path) -> None:
     await proxy.stop()
 
 
+async def test_the_registry_names_are_declared_at_build_and_on_reload(tmp_path: Path) -> None:
+    # Every name in middleware.available, chained or not, is a middleware label value before
+    # any flow runs; a reload that brings a new name declares it too (0009).
+    config = make_config(
+        tmp_path,
+        MITM_PROXY_MIDDLEWARE_AVAILABLE="sample=tests.unit.sample_middleware:Sample,"
+        "spare=tests.unit.sample_middleware:Broken",
+        MITM_PROXY_MIDDLEWARE_CHAIN="sample",
+    )
+    proxy = ProxyServer(config, connector=Origin().connector)
+    assert proxy.metrics.middleware.values == {"sample", "spare"}
+    proxy.apply(
+        make_config(
+            tmp_path,
+            MITM_PROXY_MIDDLEWARE_AVAILABLE="later=tests.unit.sample_middleware:Sample",
+            MITM_PROXY_MIDDLEWARE_CHAIN="later",
+        )
+    )
+    # Never removed: a series that has existed keeps rendering.
+    assert proxy.metrics.middleware.values == {"sample", "spare", "later"}
+    proxy.metrics.middleware_failures.inc("later")
+    await proxy.stop()
+
+
+async def test_injected_middleware_names_are_declared(tmp_path: Path) -> None:
+    from mitm_proxy.pipeline import Middleware
+
+    proxy = ProxyServer(
+        make_config(tmp_path), middleware=[("given", Middleware())], connector=Origin().connector
+    )
+    assert "given" in proxy.metrics.middleware.values
+    await proxy.stop()
+
+
 async def test_secrets_are_revealed_only_where_used(tmp_path: Path) -> None:
     from mitm_proxy.tls.ca import CERT_FILE, KEY_FILE, fingerprint, generate_root, write_root
 

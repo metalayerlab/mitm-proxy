@@ -57,7 +57,7 @@ flowchart LR
 | `mitm_proxy/pipeline.py` | The middleware API (`Middleware`, `Action`) and the runner |
 | `mitm_proxy/upstream/pool.py` | The connection pool and the TCP/TLS connector |
 | `mitm_proxy/auth.py` | Basic proxy authentication |
-| `mitm_proxy/metrics.py` | Prometheus text exposition |
+| `mitm_proxy/metrics.py` | Which metrics exist, their buckets and their labels' declared values, on [interpose](https://github.com/metalayerlab/interpose)'s metric types and text format (design 0009) |
 | `mitm_proxy/errors.py` | Exception types |
 
 ## Data flow
@@ -76,7 +76,7 @@ Following `curl --proxy … https://example.org/` with `example.org` listed:
 
 **Access log:** `exchange.handle` wraps the client's request body in a byte counter and the client's `Responder` in a `_Recorder` (status sent, body bytes, finished or not). The exchange marks the path it took (origin, local, denied, error), and the `finally` that stamps `complete` writes the line: a synchronous log call, so it's also written when the task is cancelled. An unfinished response is `aborted`. Relayed tunnels are logged from `ProxyServer._relay`, using the counts `relay()` returns.
 
-**End of a flow:** the same `finally` sets `flow.outcome`, writes the access-log line, then awaits `FlowPipeline.run_done()` (`on_done` for each middleware that applied). It runs when the task is cancelled too: an HTTP/2 stream reset, or shutdown after the grace period. That's why `H2Server` awaits its cancelled stream tasks before returning, so shutdown waits for their `on_done` (each bounded by the hook timeout). Last, `Metrics.observe_flow` records the flow in the duration histograms, after `on_done` so the middleware histogram includes it. `metrics.py` writes the histograms' text format itself (cumulative buckets, `_sum`, `_count`), like the counters and gauges. With `proxy.server_timing` on, `exchange.server_timing` turns them into a `Server-Timing` field, added after the response hooks and the framing headers, just before `responder.start` (and in `send_simple` for denies and proxy errors).
+**End of a flow:** the same `finally` sets `flow.outcome`, writes the access-log line, then awaits `FlowPipeline.run_done()` (`on_done` for each middleware that applied). It runs when the task is cancelled too: an HTTP/2 stream reset, or shutdown after the grace period. That's why `H2Server` awaits its cancelled stream tasks before returning, so shutdown waits for their `on_done` (each bounded by the hook timeout). Last, `Metrics.observe_flow` records the flow in the duration histograms, after `on_done` so the middleware histogram includes it. The text format (cumulative buckets, `_sum`, `_count`, and the counters and gauges) is interpose's `Registry.render()`. Every label value is declared before use: the fixed sets in `metrics.py`, and the middleware names from `middleware.available`, declared by `ProxyServer._build` before each snapshot's pipeline exists. An undeclared value is a `ValueError` at the call, so a hostname can't become a label. With `proxy.server_timing` on, `exchange.server_timing` turns them into a `Server-Timing` field, added after the response hooks and the framing headers, just before `responder.start` (and in `send_simple` for denies and proxy errors).
 
 **State** is in memory only: the snapshot, the CA's LRU of server contexts, the pool. The root CA is the only thing on disk (`<state_dir>/ca/`); the shared leaf key sits encrypted in a private temporary directory while the process runs.
 

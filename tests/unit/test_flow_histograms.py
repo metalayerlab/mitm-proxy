@@ -2,8 +2,10 @@
 
 import asyncio
 
+from interpose.metrics import Histogram
+
 from mitm_proxy.http.flow import Flow, Response
-from mitm_proxy.metrics import Histogram, Metrics
+from mitm_proxy.metrics import Metrics
 from mitm_proxy.pipeline import Action, Middleware
 from mitm_proxy.scope import Allowlist
 from tests.harness import Origin, bench, client_for, send
