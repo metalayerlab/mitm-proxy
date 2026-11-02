@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.2.0](https://github.com/metalayerlab/mitm-proxy/compare/v0.1.1...v0.2.0) (2026-11-02)
+
+
+### ⚠ BREAKING CHANGES
+
+* configuration is now typed strictly. A YAML float for an integer setting (port: 3128.0, max_buffer_bytes: 0.5) and a YAML list or mapping for a text setting are a ConfigError instead of being silently truncated or turned into their repr; an integer written with underscores in an environment variable or _FILE (1_000) is refused; a _FILE value keeps its leading whitespace (only trailing whitespace is stripped).
+
+### ✨ Features
+
+* adopt interpose for settings and secrets ([#10](https://github.com/metalayerlab/mitm-proxy/issues/10)) ([ef5d483](https://github.com/metalayerlab/mitm-proxy/commit/ef5d48313bf346bb13e631d0942157645bfd2d02))
+
 ## [0.1.1](https://github.com/metalayerlab/mitm-proxy/compare/v0.1.0...v0.1.1) (2026-11-01)
 
 
