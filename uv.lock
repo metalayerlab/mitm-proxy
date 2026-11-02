@@ -466,8 +466,8 @@ wheels = [
 
 [[package]]
 name = "interpose"
-version = "0.1.2"
-source = { git = "https://github.com/metalayerlab/interpose?rev=v0.1.2#cf805094a8efba98d21fa14319ae47ee37e6372f" }
+version = "0.1.4"
+source = { git = "https://github.com/metalayerlab/interpose?rev=v0.1.4#93164d4f8346b4264a372c8db6ec3043e6c44d16" }
 dependencies = [
     { name = "pyyaml" },
 ]
@@ -610,7 +610,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "h11", specifier = ">=0.16.0" },
     { name = "h2", specifier = ">=4.4.1" },
-    { name = "interpose", git = "https://github.com/metalayerlab/interpose?rev=v0.1.2" },
+    { name = "interpose", git = "https://github.com/metalayerlab/interpose?rev=v0.1.4" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "typer", specifier = ">=0.15" },
     { name = "uvicorn", specifier = ">=0.34" },

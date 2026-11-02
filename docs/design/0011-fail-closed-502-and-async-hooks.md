@@ -60,9 +60,18 @@ The rest of 0010 stands.
 | Fail-closed failure in `on_response`, `on_response_chunk` | `502 denied by middleware <name>` | `502 middleware <name> failed` |
 | Deliberate `DENY` | `403`/`502 denied by middleware <name>` | unchanged |
 | A hook written as a plain `def` | fails on every flow, skipped (fail open) | refused at startup, or the reload is refused and the old pipeline stays |
+| A hook that blocks past its timeout, or swallows its cancellation | its late result is accepted | a timeout failure, logged with `late:` (skipped, or a `502` if fail-closed) |
 
 This is a breaking change for clients or monitors that read a `403` as "a fail-closed middleware broke",
 and for third-party middleware with a sync hook, which now stops startup.
+
+4. **Late hook results (interpose v0.1.4, its design 0005).** The pin moves to v0.1.4 in the same
+   release. A hook whose result comes back after its timeout is now a timeout failure, not an accepted
+   result: `Failure.late` is `"overran"` (synchronous code ran past the deadline, so the cancellation
+   never reached it) or `"swallowed"` (it caught the cancellation and returned). The timeout log line
+   adds it: `middleware '<name>' timed out in <hook> after <n>s, late: overran (flow <id>)`. So a
+   sync-blocking hook that overruns its 5 s now fails (skipped by default, a `502` if it fails closed)
+   instead of having its late result accepted. It still blocks the event loop while it runs.
 
 ## Alternatives considered
 
