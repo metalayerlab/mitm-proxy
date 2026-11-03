@@ -43,3 +43,9 @@ the team (and its AI assistants) should know at a glance.
 - Depending on interpose through `[tool.uv.sources]`: the published metadata would name a bare `interpose`, which pip resolves from PyPI (design 0008).
 - Secrets as plain `str` fields, masked only where displayed: every new use site has to remember; `Secret` makes a slip print `********` (design 0008).
 - Pre-registering every metric label combination at zero: adds series and changes `/metrics` output (design 0009).
+- Forward mode only, for a service in a sealed network: its clients connect to an address, not through a proxy; a `reverse` listener instead (design 0012).
+- Each middleware reading its own YAML from an env-var path: no lookup order, validation, secrets or reload; `middleware.config.<name>` instead (design 0012).
+- Capture as a separate package: redaction defaults and the record format belong with the proxy (design 0012).
+- Buffering bodies for capture: holds server-sent events back and distorts recorded timings; observe-only streaming (design 0012).
+- `proxy.idle_timeout_ms` as the knob for slow origins: keeps idle clients and tunnels open as long; `upstream.read_timeout_ms` (design 0012).
+- Redacting captures after writing: credentials would reach disk (design 0012).
