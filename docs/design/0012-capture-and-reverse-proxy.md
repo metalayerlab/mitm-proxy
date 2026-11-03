@@ -2,7 +2,7 @@
 
 <!-- Add a line for this record to the index in docs/design/README.md (CI checks). -->
 
-Status: Proposed
+Status: Approved (approved by the brain coordinator for Stephen, 2026-11-03)
 Date: 2026-11-03
 Authors: Stephen Cox; drafted by Claude (Claude Code)
 
@@ -27,7 +27,8 @@ and the only way out. Five things stand in the way today:
    `server.py`. An LLM call can be silent for longer than a client connection should be allowed to idle.
 
 Stephen approved the five decisions below on 2026-11-03. This record writes them down, with the details
-that follow from them, for review before anything is built.
+that follow from them; the brain coordinator approved it for Stephen on 2026-11-03, with the questions it
+raised decided as below.
 
 Constraints:
 
@@ -61,6 +62,8 @@ reverse:
 - **The request.** `flow.request.authority` becomes the upstream's authority, so middleware, the
   access log and the origin all see the name the request goes to. The client's `Host` is kept in
   `X-Forwarded-Host` (set only when absent), and the client's address is appended to `X-Forwarded-For`.
+  Nothing else is added: no `Forwarded` (RFC 7239) until someone needs it, and no `X-Forwarded-Proto`,
+  which a TLS terminator in front sets itself.
 - **Scope.** Every flow on a reverse listener is intercepted: the operator listed the upstream by
   configuring the listener, so `intercept.hosts` doesn't apply. Middleware still selects with
   `applies_to`.
@@ -97,12 +100,18 @@ middleware:
 - **How it fits interpose's Settings.** interpose declares every setting up front, and a value is a
   scalar, a list of scalars or a `Secret`; nested objects are a non-goal (its Introduction). A YAML key
   that isn't declared is ignored. Neither `middleware.config` nor `reverse` can be declared today.
-  The proposal is an interpose change, under its own interpose record: a declared **section** setting,
+  Sections live in interpose, not in a second YAML reader here (which would duplicate interpose's file
+  handling and could disagree with it; sluice will want the same thing). That is an interpose change,
+  under its own interpose record: a declared **section** setting,
   whose value is the deep-frozen YAML subtree at its key. It comes from the YAML file, or from
   `<PREFIX><KEY>_FILE` (a YAML file with the whole section, for a Kubernetes ConfigMap or Secret mount),
   never from a plain environment variable (a mapping in a variable is unreadable). It keeps the lookup
   order and the "values are never logged" rule, and it gives `scripts/gen-wiki.py` a row to generate.
   mitm-proxy declares `middleware.config` and `reverse` as sections and validates them in `config.py`.
+- **Managed (0002).** `middleware.config` is a managed setting, like `middleware.chain`. Because it can
+  name a directory the proxy writes to, when managed mode is built `capture.dir` must be under a new
+  bootstrap setting, `capture.root`; a `dir` outside it is a refused configuration. Until managed mode
+  exists, `capture.dir` is unrestricted.
 - **Secrets inside it.** A secret is never written inline. A leaf written `{secret_file: /run/secrets/x}`
   is replaced, when the configuration is loaded, by a `Secret` holding that file's contents (with the
   trailing newline stripped, as for `_FILE`); the middleware calls `reveal()` where it uses the value. A
@@ -127,6 +136,7 @@ middleware:
       redact:
         headers: [authorization, proxy-authorization, x-api-key, cookie, set-cookie]  # on by default
         json_paths: ["$.api_key"]
+        query_params: [api_key]
         marker: "[REDACTED]"
       rules:
         - name: inbound-api
@@ -140,10 +150,11 @@ The shape is as approved; this record only pins down defaults and matching:
 
 | Key | Type | Default | Meaning |
 |---|---|---|---|
-| `dir` | str | *(required)* | Where the files go. Created (mode `0700`) if missing. |
+| `dir` | str | *(required)* | Where the files go. Created (mode `0700`) if missing. Under managed configuration (0002), must be under the bootstrap setting `capture.root`. |
 | `max_body_bytes` | int | `1048576` | The most body bytes stored per message, after redaction. |
 | `redact.headers` | list | the five above | Header names, any case. A given list **replaces** the default, so the example repeats it. |
-| `redact.json_paths` | list | *(none)* | Paths whose values are replaced in JSON bodies. |
+| `redact.json_paths` | list | *(none)* | Paths whose values are replaced in JSON bodies and in JSON `data:` lines of server-sent events. |
+| `redact.query_params` | list | *(none)* | Query parameter names whose values are replaced in the recorded URL. |
 | `redact.marker` | str | `[REDACTED]` | What a redacted value becomes. |
 | `rules` | list | *(required, one or more)* | Which flows are recorded. |
 | `rules[].name` | str | *(required)* | Unique; lower-case letters, digits, `-` and `_` (it names files). |
@@ -201,7 +212,12 @@ proxy errors and aborted flows are recorded too:
   steps, and `..name` for any depth. A body that isn't JSON, or doesn't parse, is stored as it is with
   `json_paths` skipped. Because skipping is silent, a configuration with `json_paths` and a rule that
   matches non-JSON bodies is worth testing: Writing-Middleware's capture section will say so.
-- URL query values aren't redacted by this version (see Open questions).
+- **Server-sent events.** In a `text/event-stream` body, `json_paths` apply to each `data:` line whose
+  value parses as JSON; other lines are stored as they are. This comes with observe-only streaming (step
+  (e)); until then an event-stream body is stored with `json_paths` skipped.
+- **`query_params`** (default empty) apply to the request URL's query string: the value of every
+  parameter with a listed name (compared exactly; query names are case-sensitive) becomes the marker,
+  each time the name appears. The parameter names and the rest of the URL are kept.
 
 **Files.** The record goes to `<dir>/<rule>-YYYY-MM-DD.jsonl`, the UTC date when it is written: rotation is
 a new name at midnight UTC, and old files are never touched (retention is the operator's job). Files are
@@ -264,9 +280,10 @@ Each step is its own PR, with its tests and wiki changes, and each is useful alo
    release, then a pin bump here), then `middleware.config` and the `{secret_file: …}` leaves.
 2. **(b) Reverse-proxy mode:** `reverse`, `ReverseProxySource`, `flow.direction`.
 3. **(c) The `capture` middleware,** buffered: it reads bodies in `on_done`, and `streamed` is false.
+   Header, `json_paths` and `query_params` redaction land here.
 4. **(d) `upstream.read_timeout_ms`:** small and independent; can go earlier if slow calls hurt first.
 5. **(e) Observe-only streaming:** the flag, the streaming path in `exchange.py`, and `capture` moved to
-   chunk hooks with `observe_only = True`.
+   chunk hooks with `observe_only = True`, with `json_paths` applied to server-sent events' `data:` lines.
 
 ## Alternatives considered
 
@@ -297,10 +314,12 @@ Each step is its own PR, with its tests and wiki changes, and each is useful alo
 - **Changes to earlier records:** 0001's out-of-scope list loses "storing flows" (replay and a viewer
   stay out), "per-middleware options in config" and the read-only half of "true chunk-by-chunk
   streaming". 0001's "an applying middleware forces buffering" gains the observe-only exception. 0002's
-  bootstrap list gains `reverse`; whether `middleware.config` is managed is an open question below.
-- **Interface changes:** settings `reverse`, `middleware.config`, `upstream.read_timeout_ms`; `Flow`
-  gains `direction`; `Middleware` gains `observe_only` (reserved); constructors may take one mapping; a
-  built-in `capture` name; the metric `mitm_proxy_capture_records_total`. A flow's direction
+  bootstrap list gains `reverse` (and, when managed mode is built, `capture.root`); its managed list
+  gains `middleware.config`.
+- **Interface changes:** settings `reverse`, `middleware.config`, `upstream.read_timeout_ms` (and
+  `capture.root` when managed mode is built); `Flow` gains `direction`; `Middleware` gains `observe_only`
+  (reserved); constructors may take one mapping; a built-in `capture` name, with its options above
+  (`redact.query_params` among them); the metric `mitm_proxy_capture_records_total`. A flow's direction
   (`inbound`/`egress`) is a different thing from the `direction` label (`request`/`response`) of
   `mitm_proxy_oversize_passthrough_total`; the wiki must keep them apart.
 - **Security:** captures hold request and response bodies, which can be personal or secret data beyond
@@ -319,17 +338,17 @@ Each step is its own PR, with its tests and wiki changes, and each is useful alo
 
 ## Open questions
 
-1. **Section settings in interpose, or mitm-proxy reading the subtree itself?** Recommendation: interpose.
-   sluice will want the same thing, and re-reading the YAML outside interpose would duplicate its file
-   handling and could disagree with it.
-2. **Is `middleware.config` managed (0002)?** It can name a directory the proxy writes to. Recommendation:
-   managed, like `middleware.chain`, with `capture.dir` restricted to paths under a bootstrap
-   setting (say `capture.root`) when managed mode is built.
-3. **`json_paths` inside server-sent events.** An LLM stream is `text/event-stream` with JSON in each
-   `data:` line, which this version stores unredacted. Recommendation: apply `json_paths` to each
-   `data:` line that parses as JSON, in step (c) or (e).
-4. **Query-string redaction** (`?api_key=…`). Recommendation: a `redact.query_params` list, same marker;
-   small, and API keys do travel in queries.
-5. **The forwarding headers.** Recommendation: as above (`X-Forwarded-Host` if absent, append
-   `X-Forwarded-For`); no `Forwarded` (RFC 7239) until someone needs it, and no `X-Forwarded-Proto`,
-   which a TLS terminator in front sets itself.
+All five decided 2026-11-03 by the brain coordinator for Stephen, each as recommended, and written into
+the decision above.
+
+1. ~~**Section settings in interpose, or mitm-proxy reading the subtree itself?**~~ Decided: interpose.
+   Step (a) depends on an interpose release with section settings; the interpose record is written
+   separately.
+2. ~~**Is `middleware.config` managed (0002)?**~~ Decided: managed, like `middleware.chain`; `capture.dir`
+   must be under a bootstrap setting `capture.root` when managed mode is built.
+3. ~~**`json_paths` inside server-sent events.**~~ Decided: `json_paths` apply to each `data:` line that
+   parses as JSON, in the observe-only streaming step (e).
+4. ~~**Query-string redaction.**~~ Decided: `redact.query_params`, a list of parameter names whose values
+   get the same marker; empty by default.
+5. ~~**The forwarding headers.**~~ Decided: `X-Forwarded-Host` only if absent, `X-Forwarded-For`
+   appended; no `Forwarded` (RFC 7239) and no `X-Forwarded-Proto`.
