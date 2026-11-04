@@ -60,6 +60,7 @@ from interpose.settings import (
     positive,
 )
 
+from mitm_proxy.middleware import BUILTIN
 from mitm_proxy.scope import parse_pattern
 
 __all__ = [
@@ -456,6 +457,15 @@ def load_config(path: Path | None = None, environ: Mapping[str, str] | None = No
 
     # Rules that span settings.
     available = _parse_available(r.list("middleware.available"))
+    for name in available:
+        if name in BUILTIN:
+            # It would shadow the built-in (design 0012): `capture` always means the built-in.
+            raise ConfigError(
+                f"middleware.available: {name!r} is a built-in middleware, always available; "
+                "remove the entry, or give your middleware another name"
+            )
+    # What a chain or a config entry may name: the registry and the built-ins.
+    known = ", ".join(sorted({*available, *BUILTIN}))
     chain = r.list("middleware.chain")
     for name in chain:
         if name == "log" and name not in available:
@@ -463,20 +473,19 @@ def load_config(path: Path | None = None, environ: Mapping[str, str] | None = No
                 "middleware.chain: the built-in 'log' middleware was replaced by the "
                 "proxy.access_log setting; remove 'log' from the chain and set that instead"
             )
-        if name not in available:
+        if name not in available and name not in BUILTIN:
             raise ConfigError(
-                f"middleware.chain: {name!r} is not in middleware.available "
-                f"(known: {', '.join(sorted(available)) or 'none'})"
+                f"middleware.chain: {name!r} is not in middleware.available or a built-in "
+                f"(known: {known})"
             )
 
     # Options for a middleware that can't run are a mistake (a typo, or one left behind).
-    # There are no built-in middleware yet: when there are, they are available too.
     options: dict[str, Section] = {}
     for name, entry in r.section("middleware.config").items():
-        if name not in available:
+        if name not in available and name not in BUILTIN:
             raise ConfigError(
-                f"middleware.config: {name!r} is not in middleware.available "
-                f"(known: {', '.join(sorted(available)) or 'none'})"
+                f"middleware.config: {name!r} is not in middleware.available or a built-in "
+                f"(known: {known})"
             )
         if not isinstance(entry, Section):  # pragma: no cover - its check refused it
             raise ConfigError(f"middleware.config.{name}: expected a mapping")

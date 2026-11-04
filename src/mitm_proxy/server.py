@@ -35,6 +35,7 @@ from mitm_proxy.interception.base import InterceptedConnection
 from mitm_proxy.interception.explicit import ExplicitProxySource
 from mitm_proxy.interception.reverse import ReverseProxySource
 from mitm_proxy.metrics import Metrics
+from mitm_proxy.middleware.capture import Capture
 from mitm_proxy.pipeline import Middleware, Pipeline, load_middleware
 from mitm_proxy.relay import relay
 from mitm_proxy.scope import Allowlist, normalize_host
@@ -171,6 +172,11 @@ class ProxyServer:
         # Before the pipeline exists: every name it can report is already a declared label
         # value. The whole registry, so the names a later chain may use are covered too (0009).
         self.metrics.declare_middleware([*config.middleware_available, *(n for n, _ in loaded)])
+        for _, mw in loaded:
+            if isinstance(mw, Capture):
+                # Its rule names are label values before it can count a record (0009).
+                self.metrics.declare_capture_rules(mw.rule_names)
+                mw.on_record = self.metrics.capture_records.inc
         pipeline = Pipeline(loaded, hook_timeout=config.hook_timeout_ms / 1000)
         return Snapshot(config, Allowlist(config.intercept_hosts), pipeline, config_hash(config))
 

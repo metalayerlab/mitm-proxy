@@ -31,6 +31,7 @@ from interpose.pipeline import NO_LIMIT, HookFailed, InvalidResult, OnError, req
 
 from mitm_proxy.errors import StartupError
 from mitm_proxy.http.flow import Flow
+from mitm_proxy.middleware import BUILTIN
 
 __all__ = [
     "NO_LIMIT",
@@ -372,7 +373,8 @@ def load_middleware(
     chain: Sequence[str],
     options: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[tuple[str, Middleware]]:
-    """Import the chain's middleware from the registry (name -> "module:attribute").
+    """Import the chain's middleware from the registry (name -> "module:attribute") or the
+    built-ins (``mitm_proxy.middleware.BUILTIN``, design 0012), which the registry can't shadow.
 
     A class is constructed with its entry in ``options`` (``middleware.config``, design 0012) as
     one positional argument, a read-only mapping, or with no arguments when it has no entry. The
@@ -380,7 +382,7 @@ def load_middleware(
     """
     loaded: list[tuple[str, Middleware]] = []
     for name in chain:
-        ref = available[name]
+        ref = available[name] if name in available else BUILTIN[name]
         entry = None if options is None else options.get(name)
         module_name, _, attribute = ref.partition(":")
         try:

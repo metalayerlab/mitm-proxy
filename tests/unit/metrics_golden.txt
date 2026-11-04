@@ -207,3 +207,7 @@ mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="5.0"} 0
 mitm_proxy_middleware_duration_seconds_bucket{middleware="block",le="+Inf"} 1
 mitm_proxy_middleware_duration_seconds_sum{middleware="block"} 6
 mitm_proxy_middleware_duration_seconds_count{middleware="block"} 1
+# HELP mitm_proxy_capture_records_total Records the capture middleware wrote or dropped, by rule and result.
+# TYPE mitm_proxy_capture_records_total counter
+mitm_proxy_capture_records_total{rule="inbound-api",result="failed"} 1
+mitm_proxy_capture_records_total{rule="inbound-api",result="written"} 2

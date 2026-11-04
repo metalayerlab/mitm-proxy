@@ -67,12 +67,17 @@ def _populated() -> Metrics:
     m.middleware_duration.observe(0.00005, "audit")
     m.middleware_duration.observe(0.3, "audit")
     m.middleware_duration.observe(6.0, "block")
+    m.declare_capture_rules(["inbound-api"])
+    m.capture_records.inc("inbound-api", "written")
+    m.capture_records.inc("inbound-api", "written")
+    m.capture_records.inc("inbound-api", "failed")
     return m
 
 
 def test_output_is_byte_for_byte_what_it_was() -> None:
     # metrics_golden.txt was rendered by mitm-proxy's own exposition (v0.2.0) from the same
-    # calls: dashboards and recording rules built on 0007 depend on this text (0009).
+    # calls: dashboards and recording rules built on 0007 depend on this text (0009). The
+    # capture metric (design 0012) was appended after it; the text before it is unchanged.
     assert _populated().render() == GOLDEN.read_text()
 
 

@@ -66,6 +66,14 @@ The flow ended before the whole response was sent. Usually the client gave up: a
 
 That body was bigger than `body.max_buffer_bytes`, so middleware didn't see it. Raise the limit if you need to inspect such bodies (they're held in memory).
 
+### `capture: dir … can't be created or written` / `a record for rule … can't be written`
+
+The capture middleware can't write to its `dir`. The first line is at startup: the proxy runs anyway. The second is for a record it dropped, logged at most once a minute per rule; `mitm_proxy_capture_records_total{result="failed"}` counts every one. The traffic is never affected. Check that `dir` exists or can be created, that the proxy's user can write it (in a container, that the volume is mounted read-write; under systemd, that it's under `/var/lib/mitm-proxy` or in `ReadWritePaths=`), and that the disk isn't full. A dropped record isn't written later: the flows in between are lost.
+
+### Capture recorded a value it should have redacted
+
+`json_paths` apply only to bodies declared `application/json` or `*+json` that parse as JSON, and not yet to server-sent events; other bodies are stored as they are, silently. Headers are redacted only by name: a list you give replaces the default five. Add the header name, or narrow the rule (`path`, `methods`) to the JSON traffic, and test with a fake credential (see [Writing Middleware](Writing-Middleware#the-built-in-capture-middleware)).
+
 ### `the proxy listens on 0.0.0.0 without proxy.auth`
 
 Anyone who can reach the port can use the proxy. Set `proxy.auth`, or bind `127.0.0.1`.

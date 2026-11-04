@@ -204,7 +204,7 @@ class Audit(Middleware):
 - **The timeout is per hook call.** `middleware.hook_timeout_ms` (5 s by default) or your `timeout` bounds each call: every `on_request`, every `on_response`, every chunk-hook call and `on_done`, each on its own. It isn't a budget for the whole flow.
 - **Be cancel-safe.** A timeout cancels your hook at whatever `await` it's in. Release what you hold in `try`/`finally` or `async with`, and never swallow `asyncio.CancelledError` (no bare `except BaseException:` that carries on): re-raise it. A hook that catches the cancellation and returns anyway is a timeout failure (logged `late: swallowed`), and its result is thrown away.
 - **Expect to fail safely.** A hook that raises, returns the wrong type, or runs longer than `middleware.hook_timeout_ms`, is logged with your middleware's name and the flow ID, and your middleware is skipped for the rest of that flow. The traffic carries on without it, unless your middleware fails closed (below).
-- **`on_error` and `timeout` are reserved attributes.** The pipeline reads them from your middleware (design 0010); don't use the names for anything else, such as an HTTP client's timeout. The middleware's name is always its key in `middleware.available`, whatever a `name` attribute says.
+- **`on_error` and `timeout` are reserved attributes.** The pipeline reads them from your middleware (design 0010); don't use the names for anything else, such as an HTTP client's timeout. The middleware's name is always its key in `middleware.available` (or its built-in name, `capture`), whatever a `name` attribute says.
 
 ## Failing closed, and your own timeout
 
@@ -225,3 +225,31 @@ class Blocklist(Middleware):
 - **Narrow with `applies_to`.** Every flow a middleware applies to is buffered, and a middleware with a chunk hook makes its flows' bodies go out chunked. Some origins refuse chunked uploads (`411`).
 - **Bodies over `body.max_buffer_bytes`** skip middleware entirely and stream through.
 - **Don't start background tasks per chunk.** Await your work in the hook; the pipeline relies on it for backpressure.
+
+## The built-in capture middleware
+
+`capture` ships with mitm-proxy (`mitm_proxy.middleware.capture:Capture`) and needs no `middleware.available` entry: put `capture` in `middleware.chain` and give it options in `middleware.config.capture` ([its options](In-Depth-Configuration#capture)). It records each flow one of its rules matches as one JSON object per line, written from `on_done`, so local answers, denies, proxy errors and aborted flows are recorded too:
+
+```json
+{"rule": "inbound-api", "direction": "inbound", "flow": "9eba5076…", "outcome": "origin",
+ "request": {"method": "POST", "url": "http://api.internal:8000/v1/answer?api_key=[REDACTED]",
+             "headers": [["content-type", "application/json"], ["authorization", "[REDACTED]"]],
+             "body": "{\"question\": \"…\"}"},
+ "response": {"status": 200, "headers": [["content-type", "application/json"]], "body": "{…}"},
+ "timings": {"start": "2026-11-03T10:15:02.123456Z", "ttfb_ms": 812.4,
+             "end": "2026-11-03T10:15:09.551021Z"},
+ "streamed": false}
+```
+
+(Shown wrapped; on disk it's one line.)
+
+- **`flow`** is the flow ID, to join with the access log; **`outcome`** is written as the access log writes it (`origin`, `local:<name>`, `denied:<name>`, `error:<status>`, `aborted`). **`direction`** is the flow's: `inbound` or `egress`. It's a different thing from the `direction` label (`request`/`response`) of `mitm_proxy_oversize_passthrough_total`, which says which body was too big.
+- **Headers** are `[name, value]` pairs in order (a header can repeat). Trailers, when a message has them, are under `trailers`, redacted the same way.
+- **Bodies** are as sent, after every middleware's chunk hooks. A body that is UTF-8 text is a string; any other body is base64, with `"body_encoding": "base64"`. A `gzip` or `deflate` body is decoded first, with `"content_decoded": "gzip"`; any other encoding is stored as it came, in base64. A body longer than `max_body_bytes` is cut and gets `"truncated": <its length>`. A body that skipped the hooks because it was over `body.max_buffer_bytes` is `null`, with `"omitted": "oversize"` (so is a compressed body that would decode to more than 64 MiB).
+- **`response`** is `null` when the flow ended without one from the origin or a middleware (a deny, a proxy error).
+- **`timings`:** `start` and `end` are UTC wall-clock times, `ttfb_ms` the origin's time to first byte, as in the access log; `null` for a stage that didn't happen.
+- **`streamed`** is always `false` in this version: the bodies are buffered. A later release streams them past capture instead.
+
+**Test your redaction.** `json_paths` are skipped silently on any body that isn't declared JSON (`application/json` or `*+json`) or doesn't parse, and on server-sent events (`text/event-stream`) for now. A rule that matches such bodies stores them with those values intact, and nothing warns you. Before you rely on a configuration, send it a request that carries a fake credential in every place you redact, and read the file back.
+
+Capture fails open: a record it can't write is dropped and counted (`mitm_proxy_capture_records_total{rule, result}`), never an error for the traffic.

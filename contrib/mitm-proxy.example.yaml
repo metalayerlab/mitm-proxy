@@ -60,6 +60,28 @@ middleware:
   #   strip:
   #     params: [utm_source, utm_medium]
   #     token: {secret_file: /run/secrets/strip-token}
+  #
+  # The built-in `capture` middleware (no `available` entry needed; put `capture` in `chain`)
+  # records the flows its rules match as JSONL, one file per rule per UTC day in `dir`
+  # (0600 files in a 0700 directory). Credentials are redacted before anything is written; the
+  # header list below is the default, and a list you give replaces it. Bodies are stored, so
+  # treat the directory as sensitive. json_paths are skipped silently on non-JSON bodies: test
+  # your configuration against real traffic.
+  # config:
+  #   capture:
+  #     dir: /var/lib/mitm-proxy/captures
+  #     max_body_bytes: 1048576
+  #     redact:
+  #       headers: [authorization, proxy-authorization, x-api-key, cookie, set-cookie]
+  #       json_paths: ["$.api_key", "$..token"]
+  #       query_params: [api_key]
+  #       marker: "[REDACTED]"
+  #     rules:
+  #       - name: inbound-api
+  #         direction: inbound    # inbound | egress | any
+  #         host: api.internal    # exact, or *.suffix
+  #         path: "/v1/**"        # * within a segment, ** across segments; no query
+  #         methods: [POST]
   hook_timeout_ms: 5000
 
 body:
