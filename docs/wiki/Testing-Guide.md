@@ -22,6 +22,7 @@ CI runs the unit tests on every supported Python version, together with ruff, my
 | `tests/helpers.py` | `memory_pair()` (an in-memory `ByteStream` pair), `make_ca()`, `client_hello_bytes()`, `handshake_in_memory()`, `trusting_client_context()` |
 | `tests/harness.py` | The proxy test bench: `Origin` (a fake origin speaking HTTP/1.1 or HTTP/2), `bench()`, `client_for()`, `send()` |
 | `tests/unit/sample_middleware.py` | Middleware for import-by-name tests |
+| `tests/exits.py` | Fake exits for design 0013: `FakeHTTPExit` (CONNECT and absolute form, an optional login) and `FakeSocksExit` (RFC 1928/1929), on loopback, mapping each `host:port` they are asked for to a local `TestOrigin` instead of resolving it |
 | `tests/integration/test_proxy_e2e.py` | The real listener over loopback, a verified TLS origin, and shutdown on SIGTERM |
 
 ## Writing tests
@@ -36,6 +37,20 @@ CI runs the unit tests on every supported Python version, together with ruff, my
 - Don't lower the coverage floor or skip a test to make CI pass.
 
 **No sockets in unit tests.** Everything runs over `memory_pair()` streams on one loop. TLS works in memory too: `TLSStream` over a memory pair, with `make_ca()` and `trusting_client_context()`.
+
+**Exits** (design 0013) are tested on loopback, the one exception to "no sockets": the connectors speak to real asyncio servers (`tests/exits.py`), still with no network. `tests/unit/test_chain.py` covers each connector, logins, refusals, timeouts, verified TLS inside the tunnel, the pool's separation by exit, and that a routed site's name is never resolved (it records every `getaddrinfo` call); `tests/unit/test_routing.py` covers routing through the server, the fail-closed `503`s, and that nothing changes with `exits` empty; `tests/unit/test_exits_config.py` covers the settings. Fixture logins are made up (`TEST_LOGIN`); never use a real one.
+
+### The throughput gate
+
+`benchmarks/throughput_gate.py` is design 0013's streaming-throughput gate (section 10), for a person to run beside a test deployment: never by pytest or CI. It compares downloads through mitm-proxy with downloads straight to the same exit, alternating rounds, plus two downloads at once, first-byte latency and, optionally, one `yt-dlp` video format; it writes `samples.csv`, `latency.csv` and `summary.json` to `--out` and prints `RESULT: PASS`, `FAIL` or `INCONCLUSIVE` (exit codes 0, 1 and 3).
+
+```sh
+uv run python benchmarks/throughput_gate.py --proxy http://127.0.0.1:3128 \
+  --exit http://exit-a.exits:8001 --download-url <a large HTTPS file> \
+  --proxy-pid <mitm-proxy's PID> --out results/
+```
+
+Every endpoint is an argument; only `--probe-url` has a default (the record's own). mitm-proxy must have the exit as its only default and must not decrypt the download's host. Without `--proxy-pid` (mitm-proxy's process, readable in `/proc`) the CPU cost can't be checked, so the result is at best inconclusive. Its pure parts (the statistics and the pass mark) are tested in `tests/unit/test_throughput_gate.py`.
 
 **Faking the origin.** `Origin` is a fake origin server. Its `connector` plugs into the pool, so the proxy "connects" to it in memory. Set `protocol` (`"h2"` or `"http/1.1"`, as if ALPN chose it), `status`, `body`, `trailers`, `echo=True` to answer with the request body, `websocket=True` to accept upgrades, or `fail_connect=` an `UpstreamError` to simulate refusal, timeouts or certificate failures. What it received is in `origin.seen`.
 

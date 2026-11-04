@@ -113,8 +113,21 @@ Responses the proxy sends itself, with a one-line plain-text body:
 | 405 | CONNECT where it isn't allowed |
 | 407 | Proxy credentials missing or wrong |
 | 501 | CONNECT over HTTP/2 (not supported) |
-| 502 | The origin couldn't be reached, failed verification, or broke the connection; `denied by middleware <name>` (a deny on the response); `middleware <name> failed` (a fail-closed middleware failed, in either phase); a middleware stopped the request without a response |
+| 502 | The origin couldn't be reached, failed verification, or broke the connection; with `exits` set, the exit couldn't be reached or refused (`exit exit-a refused CONNECT to …`); `denied by middleware <name>` (a deny on the response); `middleware <name> failed` (a fail-closed middleware failed, in either phase); a middleware stopped the request without a response |
+| 503 | `not sent to <site>: …`: routing refused the request, with `exits` set and no exit to use (below) |
 | 504 | The origin didn't connect or answer in time |
+
+### Every request gets `503` and the log says `routing refused`
+
+`exits` is set but `routing.default_via` is empty, so no site has an exit and every request is refused (design 0013 fails closed: it never connects directly instead). The response carries `Retry-After: 30` and `Proxy-Status: mitm-proxy; error=destination_unavailable; details="no rule matched and routing.default_via is empty"`; browsers show their own "proxy refused" page for a refused `CONNECT`. Name an exit in `routing.default_via`, or empty `exits` to turn routing off. `mitm_proxy_route_refused_total` counts these.
+
+### `502 exit exit-a refused CONNECT to …` or `cannot connect to exit exit-a`
+
+With `exits` set, every connection goes through the first exit in `routing.default_via`, and its failures fail the request: there is no failover yet, and never a direct connection. `cannot connect to exit …`: the exit's host or port is wrong, or it isn't running; test it with `curl -x <its url> https://example.org/`. `refused CONNECT … 407 (it wants a login: check its auth)`: give the exit's `auth`; `(login refused)`: the login is wrong. Another status, or a SOCKS5 reason (`host unreachable`, `connection refused`): the exit couldn't reach the site. `the connection failed` right after a `2xx`: the exit or its tunnel dropped.
+
+### `exits[0].url: no user info in an exit's URL`
+
+A login can't go in an exit's URL, where it would be a secret in a plain setting. Remove it from the URL and give it as the exit's `auth`: a `{secret_file: <path>}` leaf in the config file, or `MITM_PROXY_EXITS_<N>_AUTH_FILE`.
 
 ### `error: <key>: expected int` (or `str`, `bool`, `list`)
 

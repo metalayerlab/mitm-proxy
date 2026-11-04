@@ -57,10 +57,12 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF", "S", "T20"]
 # assert is how pytest checks; scripts print, and run git, by design.
 "tests/*" = ["S101"]
 "scripts/*" = ["T20", "S603", "S607"]
+# The throughput gate (design 0013) is a script too: it prints its results and runs curl.
+"benchmarks/*" = ["T20", "S603", "S607"]
 
 [tool.mypy]
 strict = true
-files = ["src/mitm_proxy", "tests", "scripts"]
+files = ["src/mitm_proxy", "tests", "scripts", "benchmarks"]
 
 [tool.pytest.ini_options]
 addopts = "-q --strict-markers --strict-config --cov --cov-report=term-missing:skip-covered"

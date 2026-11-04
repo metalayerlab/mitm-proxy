@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
-from collections.abc import AsyncIterator, Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -45,6 +45,14 @@ class ProxyMode:
     auth: str  # "user:password", or "" for none
     on_connect: TunnelHandler
     on_auth_failure: Callable[[], None] | None = None
+
+
+@dataclass(frozen=True)
+class ForwardProxy:
+    """An upstream connection to an HTTP exit carrying plain HTTP (design 0013): each request
+    goes in absolute form (``GET http://host/path``), with the exit's login when it has one."""
+
+    proxy_authorization: str | None = None
 
 
 class _Closed(Exception):
@@ -128,7 +136,7 @@ class H1Server:
             pass
         return False
 
-    async def _fail(self, status: int, message: str) -> None:
+    async def _fail(self, status: int, message: str, extra: Sequence[tuple[str, str]] = ()) -> None:
         """Answer with an error if a response can still be sent."""
         if self.conn.our_state not in (h11.IDLE, h11.SEND_RESPONSE):
             return
@@ -136,6 +144,8 @@ class H1Server:
         headers = Response.make(status, body).headers
         headers.set("content-length", str(len(body)))
         headers.set("connection", "close")
+        for name, value in extra:
+            headers.set(name, value)
         with contextlib.suppress(h11.ProtocolError, OSError, ConnectionError):
             await self._send(
                 h11.Response(status_code=status, headers=headers.to_bytes(), reason=b"")
@@ -265,6 +275,12 @@ class H1Server:
             await self._fail(status, message)
             await self.stream.close()
 
+        async def reject_with(
+            status: int, message: str, headers: Sequence[tuple[str, str]]
+        ) -> None:
+            await self._fail(status, message, headers)
+            await self.stream.close()
+
         self._handed_off = True
         await self.proxy.on_connect(
             InterceptedConnection(
@@ -274,6 +290,7 @@ class H1Server:
                 client_addr=self.client_addr,
                 accept=accept,
                 reject=reject,
+                reject_with=reject_with,
             )
         )
 
@@ -324,10 +341,12 @@ class H1Upstream:
         *,
         read_timeout: float,
         on_done: Callable[[H1Upstream, bool], Awaitable[None]] | None = None,
+        forward_proxy: ForwardProxy | None = None,
     ) -> None:
         self.stream = stream
         self.read_timeout = read_timeout
         self.on_done = on_done
+        self.forward_proxy = forward_proxy
         self.conn = h11.Connection(h11.CLIENT, max_incomplete_event_size=MAX_HEAD)
         self.busy = False
         self.requests = 0
@@ -378,11 +397,22 @@ class H1Upstream:
         self.busy = True
         self.requests += 1
         try:
+            target = request.path
+            wire = h1_request_headers(request, headers)
+            if self.forward_proxy is not None:
+                # To an HTTP exit: the absolute URL names the origin (RFC 9112, 3.2.2), and the
+                # exit's own login goes with it. The client's Proxy-Authorization was for this
+                # proxy and is never forwarded (normalize drops it).
+                target = f"http://{request.authority}{request.path}"
+                if self.forward_proxy.proxy_authorization is not None:
+                    wire.append(
+                        (b"proxy-authorization", self.forward_proxy.proxy_authorization.encode())
+                    )
             await self._send(
                 h11.Request(
                     method=request.method.encode("latin-1"),
-                    target=request.path.encode("latin-1"),
-                    headers=h1_request_headers(request, headers),
+                    target=target.encode("latin-1"),
+                    headers=wire,
                 )
             )
             if has_body:
