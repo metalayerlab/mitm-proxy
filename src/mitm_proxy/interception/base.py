@@ -10,7 +10,7 @@ no CONNECT to answer.
 
 from __future__ import annotations
 
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
 
@@ -35,6 +35,9 @@ class InterceptedConnection:
     accept: Callable[[], Awaitable[None]] = _nothing
     # ... or that it failed (CONNECT: this status and a one-line reason, then close).
     reject: Callable[[int, str], Awaitable[None]] = _nothing_status
+    # ... or the same with response headers (a refused route's Retry-After and Proxy-Status,
+    # design 0013). None: the source can't send headers, and `reject` is used.
+    reject_with: Callable[[int, str, Sequence[tuple[str, str]]], Awaitable[None]] | None = None
 
 
 TunnelHandler = Callable[[InterceptedConnection], Awaitable[None]]

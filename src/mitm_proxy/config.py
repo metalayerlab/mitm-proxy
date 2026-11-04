@@ -61,7 +61,8 @@ from interpose.settings import (
 )
 
 from mitm_proxy.middleware import BUILTIN
-from mitm_proxy.scope import parse_pattern
+from mitm_proxy.routing import DIRECT, Exit
+from mitm_proxy.scope import normalize_host, parse_pattern
 
 __all__ = [
     "CONFIG_ENV",
@@ -71,6 +72,7 @@ __all__ = [
     "SETTINGS",
     "Config",
     "ConfigError",
+    "Exit",
     "ReverseListener",
     "Secret",
     "Section",
@@ -83,6 +85,11 @@ DEFAULT_CONFIG_PATH = Path("/etc/mitm-proxy/config.yaml")
 LOG_LEVELS = ("DEBUG", "INFO", "WARNING", "ERROR")
 
 _NAME = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_.-]*$")
+# An exit's name (design 0013): lower-case letters, digits and `-`. It is a metric label value.
+_EXIT_NAME = re.compile(r"^[a-z0-9-]+$")
+# A Kubernetes Service name (an RFC 1035 label), for an exit's `health`.
+_SERVICE_NAME = re.compile(r"^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$")
+_EXIT_SCHEMES = {"http": "http", "socks5h": "socks5h"}
 _REF = re.compile(r"^[A-Za-z_][\w.]*:[A-Za-z_][\w.]*$")
 
 
@@ -130,6 +137,13 @@ def _no_repeats(value: Value) -> None:
         raise ValueError("a middleware is listed twice")
 
 
+def _no_repeat_exits(value: Value) -> None:
+    """routing.default_via: an exit is listed once."""
+    items = _items(value)
+    if len(set(items)) != len(items):
+        raise ValueError("an exit is listed twice")
+
+
 def _middleware_config(value: Value) -> None:
     """middleware.config: each entry, `<name>: {...}`, is a mapping for that middleware."""
     if not isinstance(value, Section):  # pragma: no cover - a section setting is a Section
@@ -149,6 +163,113 @@ def _user_password(value: Value) -> None:
         user, sep, _ = value.partition(":")
         if not sep or not user:
             raise ValueError("expected user:password")
+
+
+def _exit_name(value: Value) -> None:
+    """exits[N].name: lower-case letters, digits and `-`; `direct` is reserved."""
+    if not isinstance(value, str):  # pragma: no cover - a str field is a str
+        raise ValueError("expected a name")
+    if not _EXIT_NAME.match(value):
+        raise ValueError(f"{value!r}: use lower-case letters, digits and '-' only")
+    if value == DIRECT:
+        raise ValueError(f"{DIRECT!r} is reserved: it means a direct connection")
+
+
+def _exit_health(value: Value) -> None:
+    """exits[N].health: empty, or a Kubernetes Service name."""
+    if not isinstance(value, str):  # pragma: no cover - a str field is a str
+        raise ValueError("expected a Service name")
+    if value and not _SERVICE_NAME.match(value):
+        raise ValueError(f"{value!r} is not a Kubernetes Service name")
+
+
+def _parse_exit_url(where: str, value: str) -> tuple[str, str, int]:
+    """`http://host:port` or `socks5h://host:port`, nothing else: (kind, host, port).
+
+    User info is refused before anything else, and no message here quotes a URL that has any:
+    a password in a plain setting would be a secret in the clear (design 0013, section 2).
+    """
+    text = value.strip()
+    parts = urlsplit(text)
+    if "@" in parts.netloc:
+        raise ConfigError(
+            f"{where}: no user info in an exit's URL; give a login as the exit's auth (a secret)"
+        )
+    kind = _EXIT_SCHEMES.get(parts.scheme.lower())
+    if kind is None:
+        raise ConfigError(
+            f"{where}: must be http://host:port or socks5h://host:port, got {value!r}"
+            + (
+                " (use socks5h://: names are resolved by the exit)"
+                if parts.scheme in ("socks5", "socks", "socks4", "socks4a")
+                else ""
+            )
+        )
+    if parts.path or parts.query or parts.fragment:
+        raise ConfigError(f"{where}: just a host and a port, no path or query: {value!r}")
+    try:
+        host, port_number = parts.hostname, parts.port
+    except ValueError as e:
+        raise ConfigError(f"{where}: {e}") from None
+    if not host:
+        raise ConfigError(f"{where}: no host in {value!r}")
+    try:
+        host = normalize_host(host)
+    except ValueError:
+        raise ConfigError(f"{where}: {parts.hostname!r} is not a host name") from None
+    if port_number is None or not 0 < port_number <= 65535:
+        raise ConfigError(f"{where}: needs a port 1-65535: {value!r}")
+    return kind, host, port_number
+
+
+def _parse_exits(sections: tuple[Section, ...]) -> tuple[Exit, ...]:
+    """exits: each item's URL, unique names, and a login the exit's kind can carry."""
+    exits: list[Exit] = []
+    seen: dict[str, int] = {}
+    for i, item in enumerate(sections):
+        name = cast(str, item["name"])
+        if name in seen:
+            raise ConfigError(f"exits[{i}].name: {name!r} is already an exit (exits[{seen[name]}])")
+        seen[name] = i
+        kind, host, port_number = _parse_exit_url(f"exits[{i}].url", cast(str, item["url"]))
+        auth = cast(Secret, item["auth"])
+        if auth and kind == "socks5h":
+            user, _, password = auth.reveal().partition(":")
+            if len(user.encode()) > 255 or len(password.encode()) > 255:
+                # RFC 1929: each is one length byte.
+                raise ConfigError(
+                    f"exits[{i}].auth: a SOCKS5 user and password are 255 bytes at most each"
+                )
+        exits.append(
+            Exit(
+                name=name,
+                kind=kind,
+                host=host,
+                port=port_number,
+                country=cast(str, item["country"]).strip(),
+                health=cast(str, item["health"]),
+                retry=cast(bool, item["retry"]),
+                auth=auth,
+            )
+        )
+    return tuple(exits)
+
+
+def _check_default_via(
+    default_via: tuple[str, ...], exits: tuple[Exit, ...], allow_direct: bool
+) -> None:
+    """routing.default_via: each entry an exit, or `direct` when routing.allow_direct is on."""
+    names = {e.name for e in exits}
+    for name in default_via:
+        if name == DIRECT:
+            if not allow_direct:
+                raise ConfigError(
+                    f"routing.default_via: {DIRECT!r} is a direct connection, allowed only with "
+                    "routing.allow_direct: true"
+                )
+        elif name not in names:
+            known = ", ".join(sorted(names)) or "none: exits is empty"
+            raise ConfigError(f"routing.default_via: {name!r} is not an exit (exits: {known})")
 
 
 @dataclass(frozen=True)
@@ -325,6 +446,71 @@ SETTINGS = Settings(
             ),
         ),
         Setting(
+            "exits",
+            "",
+            "Exit proxies to send upstream connections through (design 0013). Each item has "
+            "`name`, `url` (`http://host:port` or `socks5h://host:port`), and optionally "
+            "`country`, `health`, `retry` and `auth` (a secret `user:password`). From the config "
+            "file or `_FILE`, or the indexed variables `MITM_PROXY_EXITS_<N>_<FIELD>`. Not empty: "
+            "routing is on, and nothing ever connects directly unless `routing.allow_direct` "
+            "allows it. Empty: every connection is direct, as without this setting.",
+            is_section=True,
+            is_list=True,
+            fields=(
+                Setting(
+                    "name",
+                    "",
+                    "Unique; lower-case letters, digits and `-`. `direct` is reserved.",
+                    required=True,
+                    check=_exit_name,
+                ),
+                Setting(
+                    "url",
+                    "",
+                    "`http://host:port` (an HTTP proxy) or `socks5h://host:port` (SOCKS5, names "
+                    "resolved by the exit). No path, no user info.",
+                    required=True,
+                ),
+                Setting("country", "", "An ISO 3166 code, for display only."),
+                Setting(
+                    "health",
+                    "",
+                    "The Kubernetes Service whose readiness is this exit's health. Stored, not "
+                    "yet used (design 0013, step 5).",
+                    check=_exit_health,
+                ),
+                Setting(
+                    "retry",
+                    True,
+                    "May a blocked page load be retried through this exit. Stored, not yet used "
+                    "(design 0013, step 10).",
+                ),
+                Setting(
+                    "auth",
+                    "",
+                    "`user:password` for the exit's proxy, as a `{secret_file: ...}` leaf or "
+                    "`MITM_PROXY_EXITS_<N>_AUTH_FILE`. Empty: no login.",
+                    secret=True,
+                    check=_user_password,
+                ),
+            ),
+        ),
+        Setting(
+            "routing.default_via",
+            "",
+            "The exits, by name, for a site no rule matches; today every site, as there are no "
+            "rules yet. Only the first is used until exits have health (design 0013). Empty "
+            "while `exits` is set: every request is refused with a 503.",
+            is_list=True,
+            check=_no_repeat_exits,
+        ),
+        Setting(
+            "routing.allow_direct",
+            False,
+            "Allow the reserved exit name `direct` (a direct connection) in "
+            "`routing.default_via`. Never a fallback.",
+        ),
+        Setting(
             "middleware.available",
             "",
             "Installed middleware that may run, as `name=module:attribute`.",
@@ -434,6 +620,10 @@ class Config:
     server_timing: bool = False
     intercept_hosts: tuple[str, ...] = ()
     reverse: tuple[ReverseListener, ...] = ()
+    # Design 0013: routing is on when exits is not empty.
+    exits: tuple[Exit, ...] = ()
+    routing_default_via: tuple[str, ...] = ()
+    routing_allow_direct: bool = False
     # name -> "module:attribute"
     middleware_available: Mapping[str, str] = field(default_factory=dict)
     middleware_chain: tuple[str, ...] = ()
@@ -501,6 +691,11 @@ def load_config(path: Path | None = None, environ: Mapping[str, str] | None = No
 
     reverse = _parse_reverse(r.sections("reverse"))
 
+    exits = _parse_exits(r.sections("exits"))
+    default_via = r.list("routing.default_via")
+    allow_direct = r.bool("routing.allow_direct")
+    _check_default_via(default_via, exits, allow_direct)
+
     ca_cert, ca_key = r.str("ca.cert"), r.secret("ca.key")
     if bool(ca_cert) != bool(ca_key):
         raise ConfigError("ca.cert and ca.key: set both, or neither")
@@ -521,6 +716,9 @@ def load_config(path: Path | None = None, environ: Mapping[str, str] | None = No
         server_timing=r.bool("proxy.server_timing"),
         intercept_hosts=r.list("intercept.hosts"),
         reverse=reverse,
+        exits=exits,
+        routing_default_via=default_via,
+        routing_allow_direct=allow_direct,
         middleware_available=available,
         middleware_chain=chain,
         middleware_config=MappingProxyType(options),

@@ -1,7 +1,8 @@
 """The upstream connection pool.
 
-Keyed by (host, port, TLS, SNI). HTTP/2 connections are shared: flows multiplex
-onto one up to the origin's SETTINGS_MAX_CONCURRENT_STREAMS, then another is
+Keyed by (host, port, TLS, SNI, exit): a connection opened through one exit is never reused
+through another, or for a direct connection (design 0013). HTTP/2 connections are shared: flows
+multiplex onto one up to the origin's SETTINGS_MAX_CONCURRENT_STREAMS, then another is
 opened. HTTP/1.1 connections serve one request at a time; idle ones are reused
 most-recently-used first. At most ``max_per_host`` connections per key; a flow
 that finds them all busy waits, and the wait counts towards the connect
@@ -12,6 +13,7 @@ after ``idle_timeout`` unused. There is no active probing.
 from __future__ import annotations
 
 import asyncio
+import base64
 import contextlib
 import logging
 import ssl
@@ -19,8 +21,9 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from mitm_proxy.errors import UpstreamConnectError, UpstreamTimeout, UpstreamTLSError
-from mitm_proxy.http.h1 import H1Upstream
+from mitm_proxy.http.h1 import ForwardProxy, H1Upstream
 from mitm_proxy.http.h2 import H2Upstream
+from mitm_proxy.routing import Exit
 from mitm_proxy.streams import ByteStream, PlainStream
 from mitm_proxy.tls.upstream import ALPN_ANY, ALPN_H1, UpstreamContexts
 
@@ -33,10 +36,20 @@ class Target:
     port: int
     tls: bool = True
     sni: str | None = None  # what the client asked for; defaults to host
+    # The exit to leave by (design 0013); None: connect directly. Part of the pool's key.
+    via: Exit | None = None
+    # A raw byte tunnel (a relayed CONNECT), not HTTP requests: an HTTP exit is asked to CONNECT
+    # even without TLS, instead of being sent requests in absolute form.
+    tunnel: bool = False
 
     @property
     def server_hostname(self) -> str:
         return self.sni or self.host
+
+    @property
+    def absolute_form(self) -> bool:
+        """Requests go to an HTTP exit in absolute form: plain HTTP through an HTTP exit."""
+        return self.via is not None and self.via.kind == "http" and not self.tls and not self.tunnel
 
 
 @dataclass
@@ -50,6 +63,17 @@ class Connector(Protocol):
     async def __call__(
         self, target: Target, alpn: tuple[str, ...], timeout: float
     ) -> Connected: ...
+
+
+def tls_error(target: Target, e: ssl.SSLError) -> UpstreamTLSError:
+    """The pool's error for a failed TLS handshake with an origin."""
+    if isinstance(e, ssl.SSLCertVerificationError):
+        return UpstreamTLSError(
+            f"{target.server_hostname}: certificate verification failed: {e.verify_message}"
+        )
+    return UpstreamTLSError(
+        f"{target.server_hostname}: TLS handshake failed: {getattr(e, 'reason', None) or e}"
+    )
 
 
 class TCPConnector:
@@ -71,14 +95,8 @@ class TCPConnector:
                 )
         except TimeoutError:
             raise UpstreamTimeout(f"connecting to {target.host}:{target.port} timed out") from None
-        except ssl.SSLCertVerificationError as e:
-            raise UpstreamTLSError(
-                f"{target.server_hostname}: certificate verification failed: {e.verify_message}"
-            ) from e
         except ssl.SSLError as e:
-            raise UpstreamTLSError(
-                f"{target.server_hostname}: TLS handshake failed: {getattr(e, 'reason', None) or e}"
-            ) from e
+            raise tls_error(target, e) from e
         except OSError as e:
             raise UpstreamConnectError(
                 f"cannot connect to {target.host}:{target.port}: {e.strerror or e}"
@@ -91,6 +109,23 @@ class TCPConnector:
         address = (str(peer[0]), int(peer[1])) if isinstance(peer, tuple) else None
         stream = PlainStream(reader, writer, write_timeout=self.write_timeout)
         return Connected(stream, negotiated, address)
+
+
+def forward_proxy(target: Target) -> ForwardProxy | None:
+    """How to send plain HTTP requests to an HTTP exit (absolute form, with its login), or None
+    for a connection that carries requests in origin form (direct, a tunnel, or SOCKS5)."""
+    if not target.absolute_form or target.via is None:
+        return None
+    return ForwardProxy(proxy_authorization(target.via))
+
+
+def proxy_authorization(exit_: Exit) -> str | None:
+    """The ``Proxy-Authorization`` value for an HTTP exit with a login, else None."""
+    credentials = exit_.credentials()
+    if credentials is None:
+        return None
+    token = base64.b64encode(f"{credentials[0]}:{credentials[1]}".encode()).decode("ascii")
+    return f"Basic {token}"
 
 
 Upstream = H1Upstream | H2Upstream
@@ -233,7 +268,12 @@ class ConnectionPool:
             await h2_conn.start()
             conn: Upstream = h2_conn
         else:
-            conn = H1Upstream(connected.stream, read_timeout=self.read_timeout, on_done=self._done)
+            conn = H1Upstream(
+                connected.stream,
+                read_timeout=self.read_timeout,
+                on_done=self._done,
+                forward_proxy=forward_proxy(target),
+            )
         return conn, connected.address
 
     async def open_dedicated(self, target: Target) -> tuple[ByteStream, tuple[str, int] | None]:

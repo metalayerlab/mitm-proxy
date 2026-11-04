@@ -44,9 +44,10 @@ from mitm_proxy.metrics import Metrics
 from mitm_proxy.pipeline import Action, FlowPipeline, HookFailed, Pipeline
 from mitm_proxy.pipeline import Outcome as RunOutcome
 from mitm_proxy.relay import relay
+from mitm_proxy.routing import DIRECT_ROUTE, Route, Router
 from mitm_proxy.scope import Allowlist
 from mitm_proxy.streams import ByteStream
-from mitm_proxy.upstream.pool import ConnectionPool, Target
+from mitm_proxy.upstream.pool import ConnectionPool, Target, forward_proxy
 
 log = logging.getLogger(__name__)
 flows_log = logging.getLogger("mitm_proxy.flows")  # proxy.access_log (0005)
@@ -74,13 +75,25 @@ class ExchangeContext:
     server_timing: bool = False  # add a Server-Timing field to intercepted responses (0004)
     access_log: bool = False  # a line per intercepted flow (0005)
     access_log_relayed: bool = False  # a line per relayed plain-HTTP request (0005)
+    # Design 0013. A fixed target's route (its exit is already the target's `via`), or, for
+    # plain-HTTP proxying, the router that picks each request's. Neither: direct, as before 0013.
+    fixed_route: Route | None = None
+    router: Router | None = None
 
     def route(self, request: Request) -> tuple[Target, Pipeline | None, str]:
         if self.target is not None:
             return self.target, self.pipeline, FlowType.HTTP.value
         intercepted = self.intercepts(request)
-        target = Target(request.host, request.port, tls=False)
+        target = Target(request.host, request.port, tls=False, via=self.exit_route(request).exit)
         return target, self.pipeline if intercepted else None, PLAIN_HTTP
+
+    def exit_route(self, request: Request) -> Route:
+        """Which exit this request leaves by, or why it is refused (design 0013)."""
+        if self.target is not None:
+            return self.fixed_route or DIRECT_ROUTE
+        if self.router is None:
+            return DIRECT_ROUTE
+        return self.router.route(request.host)
 
     def intercepts(self, request: Request) -> bool:
         """A TLS-intercepted flow, or plain HTTP to a listed host."""
@@ -277,8 +290,15 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
     tally = _Tally(responder)
     incoming.body = tally.count(incoming.body)
     run: FlowPipeline | None = None
+    route = ctx.exit_route(request)
     try:
-        if switch is not None:
+        if route.refused is not None:
+            # Fail closed (design 0013, section 9): answered here, sent nowhere. Middleware that
+            # apply see the flow end in on_done, as `local` by `routing`; no other hook runs.
+            if pipeline is not None and switch is None:
+                run = pipeline.start(flow, ctx.metrics.middleware_failures.inc)
+            await refuse(ctx, request.host, route, tally, head_only=request.method == "HEAD")
+        elif switch is not None:
             await _websocket(ctx, flow, incoming, switch, tally, target)
         else:
             if pipeline is not None:
@@ -299,6 +319,48 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
             # by design and relayed flows have no stages, so neither is observed (0007).
             if switch is None and ctx.intercepts(request):
                 ctx.metrics.observe_flow(flow)
+
+
+REFUSED_BY = "routing"  # a refused flow's outcome is `local`, by this (design 0013, section 9)
+RETRY_AFTER = "30"
+
+
+def refusal_headers(route: Route) -> list[tuple[str, str]]:
+    """Retry-After and Proxy-Status (RFC 9209) for a refused request: why, never a path."""
+    detail = route.detail.replace("\\", "").replace('"', "")
+    return [
+        ("retry-after", RETRY_AFTER),
+        ("proxy-status", f'mitm-proxy; error=destination_unavailable; details="{detail}"'),
+    ]
+
+
+def log_refusal(ctx_metrics: Metrics, site: str, route: Route) -> None:
+    """Every refusal is logged at INFO (the site and the exit, never the path) and counted."""
+    log.info(
+        "routing refused %s (exit %s): %s",
+        site,
+        route.label or "none",
+        route.detail,
+    )
+    ctx_metrics.route_refused(route.label, route.refused or "no_rule")
+
+
+async def refuse(
+    ctx: ExchangeContext, site: str, route: Route, tally: _Tally, *, head_only: bool = False
+) -> None:
+    """A local 503 for an inspected or plain-HTTP request that has no exit to leave by."""
+    log_refusal(ctx.metrics, site, route)
+    tally.mark("local", REFUSED_BY)
+    responder = tally.responder
+    body = f"mitm-proxy: not sent to {site}: {route.detail}\n".encode()
+    response = Response.make(503, body)
+    response.headers.set("content-length", str(len(body)))
+    for name, value in refusal_headers(route):
+        response.headers.set(name, value)
+    await responder.start(response, response.headers, end=head_only)
+    if not head_only:
+        await responder.data(body)
+        await responder.end(None)
 
 
 def _access_log(ctx: ExchangeContext, flow: Flow, tally: _Tally, outcome: Outcome) -> None:
@@ -704,7 +766,9 @@ async def _websocket(
     )
     # The upgrade's response is an origin read (upstream.read_timeout_ms, design 0012); the
     # relay after a 101 is idle traffic, and stays on the client idle timeout.
-    upstream_conn = H1Upstream(stream, read_timeout=ctx.pool.read_timeout)
+    upstream_conn = H1Upstream(
+        stream, read_timeout=ctx.pool.read_timeout, forward_proxy=forward_proxy(target)
+    )
     headers = request.headers.copy()
     headers.set("connection", "Upgrade")
     headers.set("upgrade", incoming.raw_headers.get("upgrade") or "websocket")

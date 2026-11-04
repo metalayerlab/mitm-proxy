@@ -4,8 +4,11 @@ The metric types and the text format come from interpose (design 0009); this mod
 metrics exist, their help, buckets and labels. Every label takes its values from a set declared
 here, up front, so the intercepted host can never become a label (it would make the series count
 unbounded): a value outside the set is a ``ValueError`` at the call that used it. The sets that
-grow are ``middleware`` and capture's ``rule``, declared from the configuration when a snapshot is
-built (``ProxyServer._build``), never from traffic.
+grow are ``middleware``, capture's ``rule`` and routing's ``exit``, declared from the configuration
+when a snapshot is built (``ProxyServer._build``), never from traffic.
+
+Routing's metrics (design 0013) are registered only once ``exits`` is set (``enable_routing``):
+with routing off, ``/metrics`` is exactly what it was before 0013.
 """
 
 from __future__ import annotations
@@ -16,6 +19,7 @@ from interpose.metrics import Counter, Gauge, Histogram, Label, Metric, Registry
 
 from mitm_proxy.classify import Decision
 from mitm_proxy.http.flow import OUTCOME_KINDS, PLAIN_HTTP, Flow, FlowType
+from mitm_proxy.routing import NO_EXIT, REFUSE_REASONS
 
 # Network-scale times (Prometheus's defaults, plus 30 s and 60 s), and middleware hook times
 # (100 µs up to the default hook timeout). Fixed: changing them breaks dashboards (0007).
@@ -167,6 +171,29 @@ class Metrics:
                 (self.capture_rule, Label("result", CAPTURE_RESULTS)),
             )
         )
+
+        # Design 0013: registered by enable_routing, the first time a configuration has exits.
+        self.route_exit = Label("exit")
+        self._route_refused: Counter | None = None
+
+    def enable_routing(self, exit_names: Iterable[str]) -> None:
+        """Register routing's metrics (once) and allow these exits as `exit` label values."""
+        if self._route_refused is None:
+            self._route_refused = self.registry.register(
+                Counter(
+                    "mitm_proxy_route_refused_total",
+                    "Requests refused because no exit could take them, by exit and reason "
+                    "(no_rule: no rule matched and routing.default_via is empty; exit is then "
+                    "empty). Never forwarded anywhere.",
+                    (self.route_exit, Label("reason", REFUSE_REASONS)),
+                )
+            )
+        self.route_exit.declare(NO_EXIT, *exit_names)
+
+    def route_refused(self, exit_name: str, reason: str) -> None:
+        """Count one refusal; nothing while routing's metrics aren't registered."""
+        if self._route_refused is not None:
+            self._route_refused.inc(exit_name, reason)
 
     def declare_middleware(self, names: Iterable[str]) -> None:
         """Allow these middleware names as label values (the registry's, at build and reload)."""

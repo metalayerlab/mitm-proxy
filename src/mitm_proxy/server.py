@@ -26,7 +26,7 @@ from mitm_proxy import __version__
 from mitm_proxy.classify import Decision, decide, peek
 from mitm_proxy.config import SETTINGS, Config, ReverseListener, Secret, Section
 from mitm_proxy.errors import StartupError, UpstreamError, UpstreamTimeout
-from mitm_proxy.exchange import ExchangeContext, handle
+from mitm_proxy.exchange import ExchangeContext, handle, log_refusal, refusal_headers
 from mitm_proxy.http.flow import ClientConn
 from mitm_proxy.http.h1 import H1Server
 from mitm_proxy.http.h2 import H2Server
@@ -38,11 +38,13 @@ from mitm_proxy.metrics import Metrics
 from mitm_proxy.middleware.capture import Capture
 from mitm_proxy.pipeline import Middleware, Pipeline, load_middleware
 from mitm_proxy.relay import relay
+from mitm_proxy.routing import Route, Router
 from mitm_proxy.scope import Allowlist, normalize_host
 from mitm_proxy.streams import PlainStream
 from mitm_proxy.tls.ca import CertificateAuthority, load_root
 from mitm_proxy.tls.terminate import TLSStream
 from mitm_proxy.tls.upstream import UpstreamContexts
+from mitm_proxy.upstream.chain import RoutingConnector
 from mitm_proxy.upstream.pool import ConnectionPool, Connector, Target, TCPConnector
 
 log = logging.getLogger(__name__)
@@ -81,6 +83,7 @@ class Snapshot:
     allowlist: Allowlist
     pipeline: Pipeline
     hash: str
+    router: Router = field(default_factory=Router)  # design 0013: exits empty, all direct
     applied_at: datetime.datetime = field(
         default_factory=lambda: datetime.datetime.now(datetime.UTC)
     )
@@ -116,7 +119,8 @@ class ProxyServer:
         # proxy.idle_timeout_ms also bounds socket writes, both ways: a peer that stops
         # reading would otherwise hold its flow (and connection) forever.
         idle = config.idle_timeout_ms / 1000
-        self.connector = connector or TCPConnector(
+        # Direct, or through the target's exit (design 0013): with exits empty, always direct.
+        self.connector = connector or RoutingConnector(
             UpstreamContexts(config.upstream_extra_ca_file), write_timeout=idle
         )
         self.pool = ConnectionPool(
@@ -180,7 +184,13 @@ class ProxyServer:
                 self.metrics.declare_capture_rules(mw.rule_names)
                 mw.on_record = self.metrics.capture_records.inc
         pipeline = Pipeline(loaded, hook_timeout=config.hook_timeout_ms / 1000)
-        return Snapshot(config, Allowlist(config.intercept_hosts), pipeline, config_hash(config))
+        router = Router(config.exits, config.routing_default_via)
+        if router.enabled:
+            # Its exit names are label values before anything is refused (0009).
+            self.metrics.enable_routing(router.exits)
+        return Snapshot(
+            config, Allowlist(config.intercept_hosts), pipeline, config_hash(config), router
+        )
 
     def apply(self, config: Config) -> None:
         """Swap in a new configuration; connections already open keep the old one."""
@@ -302,6 +312,9 @@ class ProxyServer:
 
         def make(client_addr: tuple[str, int]) -> ExchangeContext:
             snap = self.snapshot
+            # Routed like every other upstream connection (design 0013): never direct when
+            # exits are set, unless routing.allow_direct chose it.
+            route = snap.router.route(listener.upstream_host)
             return ExchangeContext(
                 pool=self.pool,
                 metrics=self.metrics,
@@ -315,7 +328,9 @@ class ProxyServer:
                     listener.upstream_port,
                     tls=listener.upstream_tls,
                     sni=listener.upstream_host,
+                    via=route.exit,
                 ),
+                fixed_route=route,
                 scope=None,
                 direction="inbound",
                 server_timing=snap.config.server_timing,
@@ -337,6 +352,7 @@ class ProxyServer:
             pipeline=snap.pipeline,
             target=None,
             scope=snap.allowlist,
+            router=snap.router,
             server_timing=snap.config.server_timing,
             access_log=snap.config.access_log,
             access_log_relayed=snap.config.access_log_relayed,
@@ -349,23 +365,44 @@ class ProxyServer:
         config = snap.config
         idle = config.idle_timeout_ms / 1000
         logged = config.access_log_relayed
+        route = snap.router.route(conn.target_host)
         decision = decide(conn.target_host, snap.allowlist, None)
         if decision is Decision.RELAY_OUT_OF_SCOPE:
-            await self._relay(conn, b"", decision, accepted=False, idle=idle, logged=logged)
+            if route.refused is not None:
+                await self._refuse_tunnel(conn, route)
+                return
+            await self._relay(conn, b"", decision, route, accepted=False, idle=idle, logged=logged)
             return
         await conn.accept()
         peeked = await peek(conn.stream, config.peek_timeout_ms / 1000)
         decision = decide(conn.target_host, snap.allowlist, peeked)
         if decision is not Decision.INTERCEPT or peeked.hello is None:
-            await self._relay(conn, peeked.data, decision, accepted=True, idle=idle, logged=logged)
+            if route.refused is not None:
+                # Already accepted, so there is no 503 to send: close it, never relay it.
+                log_refusal(self.metrics, conn.target_host, route)
+                await conn.stream.close()
+                return
+            await self._relay(
+                conn, peeked.data, decision, route, accepted=True, idle=idle, logged=logged
+            )
             return
 
         sni = peeked.hello.sni
         try:
             cert_host = normalize_host(sni or conn.target_host)
         except ValueError:
+            if route.refused is not None:
+                log_refusal(self.metrics, conn.target_host, route)
+                await conn.stream.close()
+                return
             await self._relay(
-                conn, peeked.data, Decision.RELAY_NOT_TLS, accepted=True, idle=idle, logged=logged
+                conn,
+                peeked.data,
+                Decision.RELAY_NOT_TLS,
+                route,
+                accepted=True,
+                idle=idle,
+                logged=logged,
             )
             return
         tls = TLSStream(
@@ -394,7 +431,9 @@ class ProxyServer:
             max_buffer=config.max_buffer_bytes,
             idle_timeout=idle,
             pipeline=snap.pipeline,
-            target=Target(conn.target_host, conn.target_port, tls=True, sni=sni),
+            target=Target(conn.target_host, conn.target_port, tls=True, sni=sni, via=route.exit),
+            # Refused (design 0013): each request gets a local 503, and nothing is sent anywhere.
+            fixed_route=route,
             server_timing=config.server_timing,
             access_log=config.access_log,
             access_log_relayed=config.access_log_relayed,
@@ -425,13 +464,14 @@ class ProxyServer:
         conn: InterceptedConnection,
         peeked: bytes,
         decision: Decision,
+        route: Route,
         *,
         accepted: bool,
         idle: float,
         logged: bool = False,
     ) -> None:
         self.metrics.tunnels.inc(decision.value)
-        target = Target(conn.target_host, conn.target_port, tls=False)
+        target = Target(conn.target_host, conn.target_port, tls=False, via=route.exit, tunnel=True)
         started = time.monotonic()
         reason, counts = decision.value, (0, 0)
         try:
@@ -467,6 +507,15 @@ class ProxyServer:
                     counts[1],
                     (time.monotonic() - started) * 1000,
                 )
+
+    async def _refuse_tunnel(self, conn: InterceptedConnection, route: Route) -> None:
+        """A CONNECT with no exit to leave by: 503, Retry-After and Proxy-Status (0013, 9)."""
+        log_refusal(self.metrics, conn.target_host, route)
+        message = f"not sent to {conn.target_host}: {route.detail}"
+        if conn.reject_with is not None:
+            await conn.reject_with(503, message, refusal_headers(route))
+        else:
+            await conn.reject(503, message)
 
     # Shutdown and status
 
