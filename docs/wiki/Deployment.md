@@ -14,6 +14,8 @@ docker compose -f contrib/docker/compose.yml logs -f
 ```
 
 Two ports are published, both on `127.0.0.1` only: the admin API (8080) and the proxy (3128). Inside the container both listeners bind `0.0.0.0`: the image sets `MITM_PROXY_LISTEN_HOST` and `MITM_PROXY_PROXY_HOST` (the compose file repeats them, to be explicit), because the `127.0.0.1` default outside containers can't be reached through a published port. The published ports decide what's reachable. Because of that, the proxy's startup warning about listening on `0.0.0.0` without `proxy.auth` also appears in containers; it matters only if you publish 3128 beyond loopback. To offer the proxy to other machines, publish 3128 beyond loopback **and** set `proxy.auth` (`MITM_PROXY_PROXY_AUTH_FILE`). Put a reverse proxy (Traefik) in front of the admin API for remote access.
+
+To run a **reverse** listener (record a service's inbound traffic; see [In-Depth Configuration](In-Depth-Configuration#reverse-proxy-mode)), set `MITM_PROXY_REVERSE_0_LISTEN` / `_0_UPSTREAM` and publish the listen port. The compose file has both commented. A reverse listener has no authentication, so publish its port only where the clients you mean can reach it.
 Secrets go in files mounted read-only, passed as `MITM_PROXY_<KEY>_FILE`. The root CA is generated in `./state/ca/` on first start: keep that directory, it's what your clients trust.
 
 ## Kubernetes
@@ -33,7 +35,7 @@ resources:
 patches: []          # replicas, resources, the ConfigMap's config.yaml, ingress
 ```
 
-The Service exposes the admin API (`http`, 8080) and the proxy (`proxy`, 3128). The NetworkPolicy admits only the `traefik` namespace to the admin API and **no one** to the proxy port: add a rule for each namespace whose pods should use the proxy (an example is commented in `networkpolicy.yaml`), and set `proxy.auth`.
+The Service exposes the admin API (`http`, 8080) and the proxy (`proxy`, 3128). The NetworkPolicy admits only the `traefik` namespace to the admin API and **no one** to the proxy port: add a rule for each namespace whose pods should use the proxy (an example is commented in `networkpolicy.yaml`), and set `proxy.auth`. For a reverse listener, uncomment the `reverse` port in `deployment.yaml` and `service.yaml` and admit only its intended clients in the NetworkPolicy.
 
 State is on an `emptyDir`, so the root CA is regenerated whenever the pod is replaced, and clients must trust the new one each time. For a stable CA, swap it for a PersistentVolumeClaim, or supply the CA from a Secret: `deployment.yaml` has the `secrets` volume and the `MITM_PROXY_CA_CERT_FILE`, `MITM_PROXY_CA_KEY_FILE` and `MITM_PROXY_PROXY_AUTH_FILE` variables commented out, ready to enable. Secrets: SOPS-encrypted Secrets in the GitOps repo, mounted as files.
 

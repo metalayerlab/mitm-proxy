@@ -12,3 +12,5 @@ spec:
   ports:
     - {name: http, port: 8080, targetPort: http}
     - {name: proxy, port: 3128, targetPort: proxy}
+    # A reverse listener (add the matching containerPort in deployment.yaml):
+    # - {name: reverse, port: 8081, targetPort: reverse}

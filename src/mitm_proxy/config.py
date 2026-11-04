@@ -45,6 +45,8 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
+from typing import cast
+from urllib.parse import urlsplit
 
 from interpose.secret import Secret
 from interpose.settings import (
@@ -68,6 +70,7 @@ __all__ = [
     "SETTINGS",
     "Config",
     "ConfigError",
+    "ReverseListener",
     "Secret",
     "Section",
     "Value",
@@ -147,6 +150,83 @@ def _user_password(value: Value) -> None:
             raise ValueError("expected user:password")
 
 
+@dataclass(frozen=True)
+class ReverseListener:
+    """One reverse-proxy listener and its fixed upstream (design 0012).
+
+    ``upstream_authority`` is what the origin is told as ``Host`` (the upstream host, with its
+    port when the configuration gave one); ``upstream_host`` is the name to connect to and the SNI.
+    """
+
+    listen_host: str
+    listen_port: int
+    upstream_host: str
+    upstream_port: int
+    upstream_tls: bool
+    upstream_authority: str
+
+
+def _parse_listen(where: str, value: str) -> tuple[str, int]:
+    """`host:port`, or `[ipv6]:port`; the port is required and 1-65535. Raises ConfigError."""
+    text = value.strip()
+    if text.startswith("["):
+        end = text.find("]")
+        if end == -1 or not text[end + 1 :].startswith(":"):
+            raise ConfigError(f"{where}: expected [ipv6]:port, got {value!r}")
+        host, port_text = text[1:end], text[end + 2 :]
+    else:
+        host, sep, port_text = text.rpartition(":")
+        if not sep:
+            raise ConfigError(f"{where}: expected host:port, got {value!r}")
+    if not host:
+        raise ConfigError(f"{where}: no host in {value!r}")
+    if not port_text.isdigit() or not 0 < int(port_text) <= 65535:
+        raise ConfigError(f"{where}: {port_text!r} is not a port 1-65535")
+    return host, int(port_text)
+
+
+def _parse_upstream(where: str, value: str) -> tuple[str, int, bool, str]:
+    """`http://` or `https://`, a host and an optional port, with no path, query or user info.
+
+    Returns (host, port, tls, authority). Raises ConfigError naming ``where``.
+    """
+    parts = urlsplit(value.strip())
+    if parts.scheme not in ("http", "https"):
+        raise ConfigError(f"{where}: must start with http:// or https://, got {value!r}")
+    if parts.path or parts.query or parts.fragment:
+        raise ConfigError(f"{where}: just a host and an optional port, no path or query: {value!r}")
+    try:
+        host, port = parts.hostname, parts.port
+    except ValueError as e:
+        raise ConfigError(f"{where}: {e}") from None
+    if parts.username is not None or parts.password is not None:
+        raise ConfigError(f"{where}: no user info in the upstream URL")
+    if not host:
+        raise ConfigError(f"{where}: no host in {value!r}")
+    tls = parts.scheme == "https"
+    return host, port if port is not None else (443 if tls else 80), tls, parts.netloc
+
+
+def _parse_reverse(sections: tuple[Section, ...]) -> tuple[ReverseListener, ...]:
+    """reverse: validate each item and that listen addresses are unique (design 0012)."""
+    listeners: list[ReverseListener] = []
+    seen: dict[tuple[str, int], int] = {}
+    for i, item in enumerate(sections):
+        host, port = _parse_listen(f"reverse[{i}].listen", cast(str, item["listen"]))
+        key = (host.lower(), port)
+        if key in seen:
+            raise ConfigError(
+                f"reverse[{i}].listen: {host}:{port} is already a listen address "
+                f"(reverse[{seen[key]}])"
+            )
+        seen[key] = i
+        up_host, up_port, up_tls, up_authority = _parse_upstream(
+            f"reverse[{i}].upstream", cast(str, item["upstream"])
+        )
+        listeners.append(ReverseListener(host, port, up_host, up_port, up_tls, up_authority))
+    return tuple(listeners)
+
+
 SETTINGS = Settings(
     ENV_PREFIX,
     (
@@ -216,6 +296,32 @@ SETTINGS = Settings(
             "Everything else is tunnelled untouched. Empty: intercept nothing.",
             is_list=True,
             check=_host_patterns,
+        ),
+        Setting(
+            "reverse",
+            "",
+            "Reverse-proxy listeners. Each item has `listen` (the `host:port` this proxy binds) "
+            "and `upstream` (an `http://` or `https://` host, optional port) it forwards to; every "
+            "request on a listener is intercepted and sent to its upstream. From the config file "
+            "or `_FILE`, or the indexed variables `MITM_PROXY_REVERSE_<N>_LISTEN` and "
+            "`_<N>_UPSTREAM`. Empty: no reverse listeners.",
+            is_section=True,
+            is_list=True,
+            fields=(
+                Setting(
+                    "listen",
+                    "",
+                    "The `host:port` this listener binds (`[::1]:8081` for IPv6).",
+                    required=True,
+                ),
+                Setting(
+                    "upstream",
+                    "",
+                    "Where it forwards: `http://` or `https://`, a host and an optional port, "
+                    "with no path, query or user info.",
+                    required=True,
+                ),
+            ),
         ),
         Setting(
             "middleware.available",
@@ -319,6 +425,7 @@ class Config:
     access_log_relayed: bool = False
     server_timing: bool = False
     intercept_hosts: tuple[str, ...] = ()
+    reverse: tuple[ReverseListener, ...] = ()
     # name -> "module:attribute"
     middleware_available: Mapping[str, str] = field(default_factory=dict)
     middleware_chain: tuple[str, ...] = ()
@@ -375,6 +482,8 @@ def load_config(path: Path | None = None, environ: Mapping[str, str] | None = No
             raise ConfigError(f"middleware.config.{name}: expected a mapping")
         options[name] = entry
 
+    reverse = _parse_reverse(r.sections("reverse"))
+
     ca_cert, ca_key = r.str("ca.cert"), r.secret("ca.key")
     if bool(ca_cert) != bool(ca_key):
         raise ConfigError("ca.cert and ca.key: set both, or neither")
@@ -394,6 +503,7 @@ def load_config(path: Path | None = None, environ: Mapping[str, str] | None = No
         access_log_relayed=r.bool("proxy.access_log_relayed"),
         server_timing=r.bool("proxy.server_timing"),
         intercept_hosts=r.list("intercept.hosts"),
+        reverse=reverse,
         middleware_available=available,
         middleware_chain=chain,
         middleware_config=MappingProxyType(options),

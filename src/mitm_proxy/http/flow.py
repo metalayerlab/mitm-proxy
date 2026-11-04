@@ -160,10 +160,12 @@ class Flow:
         client_conn: ClientConn,
         request: Request,
         server_conn: ServerConn | None = None,
+        direction: str = "egress",
     ) -> None:
         self.id = uuid.uuid4().hex
         self.type = type
         self._protocol = protocol
+        self._direction = direction
         self.client_conn = client_conn
         self.server_conn = server_conn
         self.request = request
@@ -176,6 +178,13 @@ class Flow:
     def protocol(self) -> str:
         """The client leg's protocol, "http/1.1" or "h2". Read-only."""
         return self._protocol
+
+    @property
+    def direction(self) -> str:
+        """Which way the traffic runs, set from its source when the flow is built (design 0012):
+        ``"inbound"`` for a reverse listener's flows, ``"egress"`` for the forward proxy's
+        (CONNECT and plain HTTP). Read-only."""
+        return self._direction
 
     @property
     def outcome(self) -> Outcome | None:
