@@ -43,6 +43,13 @@ middleware:
   available: []
   # What runs, by name, in order
   chain: []
+  # Options for each middleware, by name, passed to its class's constructor. A secret leaf
+  # is written {secret_file: <path>}, never inline. From this file or
+  # MITM_PROXY_MIDDLEWARE_CONFIG_FILE (a YAML file), never a plain variable.
+  # config:
+  #   strip:
+  #     params: [utm_source, utm_medium]
+  #     token: {secret_file: /run/secrets/strip-token}
   hook_timeout_ms: 5000
 
 body:

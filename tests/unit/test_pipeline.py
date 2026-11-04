@@ -2,9 +2,11 @@ import asyncio
 
 import pytest
 
+from mitm_proxy.config import Section
 from mitm_proxy.errors import StartupError
 from mitm_proxy.http.flow import ClientConn, Flow, FlowType, Request
 from mitm_proxy.pipeline import Action, Middleware, Pipeline, is_mutation_capable, load_middleware
+from tests.unit.sample_middleware import WithOptions
 
 
 def make_flow() -> Flow:
@@ -215,3 +217,46 @@ def test_timings_derive_durations_and_none_for_missing_stages() -> None:
     t.started, t.upstream_requested, t.upstream_acquired = 0.5, 1.0, 1.25
     t.request_sent, t.response_headers, t.complete = 1.5, 2.0, 3.0
     assert (t.connect, t.ttfb, t.total) == (0.25, 0.5, 2.5)
+
+
+# Constructor options from middleware.config (design 0012, section 2).
+
+
+def test_load_middleware_passes_a_middlewares_options_to_its_constructor() -> None:
+    options = Section({"dir": "/var/cap", "depth": {"n": 1}})
+    loaded = load_middleware(
+        {"opt": "tests.unit.sample_middleware:WithOptions"}, ["opt"], {"opt": options}
+    )
+    middleware = loaded[0][1]
+    assert isinstance(middleware, WithOptions)
+    assert middleware.options is options
+
+
+def test_load_middleware_constructs_a_middleware_without_options_bare() -> None:
+    available = {
+        "opt": "tests.unit.sample_middleware:WithOptions",
+        "other": "tests.unit.sample_middleware:Sample",
+    }
+    loaded = load_middleware(available, ["opt"], {"other": Section({"a": 1})})
+    middleware = loaded[0][1]
+    assert isinstance(middleware, WithOptions)
+    assert middleware.options is None
+
+
+@pytest.mark.parametrize(
+    ("ref", "message"),
+    [
+        # Takes no argument: Middleware's own constructor.
+        (
+            "tests.unit.sample_middleware:Sample",
+            r"middleware 'x': tests.unit.sample_middleware:Sample\(<middleware.config.x>\) failed",
+        ),
+        # Takes it, and refuses what it got.
+        ("tests.unit.sample_middleware:WithOptions", r"middleware 'x': .* failed: 'bad' is not"),
+        # An instance: nothing to construct.
+        ("tests.unit.sample_middleware:instance", r"middleware 'x': middleware.config has options"),
+    ],
+)
+def test_load_middleware_refuses_options_it_cannot_pass(ref: str, message: str) -> None:
+    with pytest.raises(StartupError, match=message):
+        load_middleware({"x": ref}, ["x"], {"x": Section({"bad": True})})

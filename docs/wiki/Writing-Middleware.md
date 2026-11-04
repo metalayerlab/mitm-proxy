@@ -37,6 +37,43 @@ middleware:
 
 The name (`block-ads`) is what appears in logs and metrics. The order of `chain` is the order of execution: there are no priorities.
 
+## Options
+
+A middleware takes options from `middleware.config.<name>` ([In-Depth Configuration](In-Depth-Configuration#options-for-a-middleware)). With an entry, mitm-proxy constructs your class with it as **one positional argument**: a read-only `Mapping` (nested mappings are read-only mappings, lists are tuples). With no entry, it's constructed with no arguments, so give the parameter a default if the options are optional:
+
+```python
+from collections.abc import Mapping
+from typing import Any
+
+from mitm_proxy.config import Secret
+
+
+class StripTracking(Middleware):
+    def __init__(self, options: Mapping[str, Any] | None = None) -> None:
+        options = options or {}
+        unknown = set(options) - {"params", "token"}
+        if unknown:
+            raise ValueError(f"unknown options: {', '.join(sorted(unknown))}")
+        self.params = frozenset(options.get("params", ("utm_source",)))
+        token = options.get("token")
+        if token is not None and not isinstance(token, Secret):
+            raise ValueError("token: write it as {secret_file: <path>}")
+        self.token = token
+```
+
+```yaml
+middleware:
+  available: [strip=labtools.middleware:StripTracking]
+  chain: [strip]
+  config:
+    strip: { params: [utm_source, gclid], token: { secret_file: /run/secrets/strip-token } }
+```
+
+- **Validate in the constructor.** Raise with a reason: startup fails with `middleware 'strip': … failed: <your reason>`, and a new configuration with bad options is refused, keeping the running one. Never put an option's value in the reason if it could be secret.
+- **Secrets** arrive as `Secret` values (from `{secret_file: …}` leaves). Call `reveal()` only where you use the value; `str()` gives `********`.
+- **Construction happens again on every applied configuration**, so don't keep state that must outlive one: a changed mapping applies to flows that start afterwards.
+- A class that takes no argument but is given options fails startup, as does an entry for a name registered as an instance (`module:instance`): there's nothing to construct.
+
 ## The hooks
 
 | Hook | Called | Returns |

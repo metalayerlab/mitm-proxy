@@ -6,6 +6,8 @@ so command docstrings and option help are user documentation.
 
 from __future__ import annotations
 
+import datetime
+import json
 from pathlib import Path
 from typing import Annotated
 
@@ -13,7 +15,15 @@ import typer
 from interpose.secret import MASK
 
 from mitm_proxy import DESCRIPTION, __version__
-from mitm_proxy.config import CONFIG_ENV, SETTINGS, Config, ConfigError, load_config
+from mitm_proxy.config import (
+    CONFIG_ENV,
+    SETTINGS,
+    Config,
+    ConfigError,
+    Secret,
+    Section,
+    load_config,
+)
 from mitm_proxy.errors import CAError, StartupError
 
 app = typer.Typer(
@@ -53,6 +63,19 @@ def _load(path: Path | None) -> Config:
         raise _fail(e) from e
 
 
+def _shown(node: object) -> str:
+    """A section's value on one line, as a YAML flow mapping, with every secret leaf masked."""
+    if isinstance(node, Secret):
+        return MASK
+    if isinstance(node, Section):
+        return "{" + ", ".join(f"{json.dumps(k)}: {_shown(v)}" for k, v in node.items()) + "}"
+    if isinstance(node, tuple):
+        return "[" + ", ".join(_shown(item) for item in node) + "]"
+    if isinstance(node, datetime.date):
+        return node.isoformat()
+    return json.dumps(node)
+
+
 @app.command()
 def version() -> None:
     """Print the version."""
@@ -67,8 +90,10 @@ def show_config(config: ConfigOption = None) -> None:
         value = cfg.values.get(setting.key)
         if setting.secret:
             shown = MASK if value else ""
+        elif isinstance(value, Section):
+            shown = _shown(value) if value else ""
         elif isinstance(value, tuple):
-            shown = ", ".join(value)
+            shown = ", ".join(str(item) for item in value)
         else:
             shown = str(value)
         typer.echo(f"{setting.key} = {shown}  ({cfg.sources[setting.key]})")

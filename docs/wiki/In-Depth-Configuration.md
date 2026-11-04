@@ -37,6 +37,7 @@ Generated from the code: don't edit the table, run `uv run scripts/gen-wiki.py`.
 | `intercept.hosts` | `MITM_PROXY_INTERCEPT_HOSTS` | *(empty list)* | The allowlist: hosts to intercept (`example.org`, `*.example.org`, IP literals). Everything else is tunnelled untouched. Empty: intercept nothing. A list: YAML, or comma-separated. |
 | `middleware.available` | `MITM_PROXY_MIDDLEWARE_AVAILABLE` | *(empty list)* | Installed middleware that may run, as `name=module:attribute`. A list: YAML, or comma-separated. |
 | `middleware.chain` | `MITM_PROXY_MIDDLEWARE_CHAIN` | *(empty list)* | The middleware to run, by name, in order. A list: YAML, or comma-separated. |
+| `middleware.config` | `MITM_PROXY_MIDDLEWARE_CONFIG` | *(none)* | Options for each middleware, by name: `<name>: {...}`, passed to its class's constructor. A `{secret_file: <path>}` leaf is read as a secret. From the config file or `_FILE`, never a plain variable. |
 | `middleware.hook_timeout_ms` | `MITM_PROXY_MIDDLEWARE_HOOK_TIMEOUT_MS` | `5000` | A middleware hook that runs longer than this has failed, and is skipped for the flow. |
 | `body.max_buffer_bytes` | `MITM_PROXY_BODY_MAX_BUFFER_BYTES` | `67108864` | The largest body buffered for middleware. A larger body skips middleware and is streamed through. |
 | `ca.cert` | `MITM_PROXY_CA_CERT` | *(none)* | Root CA certificate (PEM), usually via `_FILE`. Empty: `<state_dir>/ca/ca.pem`, generated on first start. |
@@ -65,7 +66,28 @@ The TLS name the client asks for (SNI) must be on the list too, or the tunnel is
 
 ### Middleware
 
-`middleware.available` registers installed middleware by name, as `name=module:attribute` (a `Middleware` subclass, created with no arguments, or an instance). `middleware.chain` lists the names to run, in order. A chain name that isn't registered is a configuration error. There's no built-in middleware: the old built-in `log` became the `proxy.access_log` setting, and a chain that still names `log` fails at startup with a message saying so. See [Writing Middleware](Writing-Middleware).
+`middleware.available` registers installed middleware by name, as `name=module:attribute` (a `Middleware` subclass, or an instance). `middleware.chain` lists the names to run, in order. A chain name that isn't registered is a configuration error. There's no built-in middleware: the old built-in `log` became the `proxy.access_log` setting, and a chain that still names `log` fails at startup with a message saying so. See [Writing Middleware](Writing-Middleware).
+
+#### Options for a middleware
+
+`middleware.config` gives a middleware its own options, by name. Each entry is a mapping, free-form: whatever that middleware accepts.
+
+```yaml
+middleware:
+  available: [strip=labtools.middleware:StripTracking]
+  chain: [strip]
+  config:
+    strip:
+      params: [utm_source, utm_medium]
+      report: { url: https://lab.example.org/hits, token: { secret_file: /run/secrets/strip-token } }
+```
+
+- The class is constructed with its entry as one argument, a read-only mapping (nested mappings and lists are read-only too). A middleware with no entry is constructed with no arguments, as before.
+- An entry for a name that isn't in `middleware.available` is a configuration error. An entry that isn't a mapping is too.
+- The middleware checks its own options. If it refuses them (or takes no options), or if the name is registered as an instance (there's nothing to construct), startup fails with a line naming the middleware, and a new configuration is refused, keeping the running one.
+- The middleware is constructed again whenever a configuration is applied, so changed options apply to flows that start afterwards.
+- `middleware.config` comes from the config file, or from `MITM_PROXY_MIDDLEWARE_CONFIG_FILE`: the path of a YAML file holding the whole mapping (a Kubernetes ConfigMap or Secret mount). A plain `MITM_PROXY_MIDDLEWARE_CONFIG` variable is an error: a mapping in one variable is unreadable.
+- Never write a secret inline. Write the leaf as `{ secret_file: <path> }`: the file is read when the configuration is loaded (the trailing newline stripped) and the middleware gets a secret value, shown as `********` (see [Secrets](#secrets)). A file that can't be read is a configuration error naming the key, never the contents.
 
 ### Bodies and framing
 
@@ -168,6 +190,8 @@ This project's secrets:
 | `ca.key` | Signing certificates that every client trusting the root accepts: the most sensitive value here | `MITM_PROXY_CA_KEY_FILE`, with `MITM_PROXY_CA_CERT_FILE` for the (public) certificate |
 
 Inside the proxy a secret is a `Secret` value, which prints as `********` in logs, errors and `repr()`; only the code that authenticates clients or loads the CA reads the value itself. The status endpoint and the configuration hash record only whether a secret is set.
+
+A middleware's secret options are `{ secret_file: <path> }` leaves in `middleware.config` ([Options for a middleware](#options-for-a-middleware)). Each becomes a `Secret` too: `mitm-proxy config` shows it as `********`, and the configuration hash records only whether it's set. These leaves are read only from local configuration (the config file or `MITM_PROXY_MIDDLEWARE_CONFIG_FILE`).
 
 When `ca.key` isn't set, the key lives in `<state_dir>/ca/ca-key.pem` with mode `0600`; the proxy warns if it's readable by anyone else.
 

@@ -16,9 +16,13 @@ rule about one setting is its ``check=``; a rule that spans settings is in
 load_config.
 
 A list setting is a YAML list, or a comma-separated string (in an environment
-variable or a file); its default is ``""`` (empty). A ``secret=True`` setting
-resolves to a ``Secret``: call ``reveal()`` where the value is used, never
-``str()`` (which gives the mask).
+variable or a file); its default is ``""`` (empty). A section setting
+(``middleware.config``) is a YAML mapping, read from the config file or from
+``MITM_PROXY_<NAME>_FILE`` (a YAML file holding the whole section), never from a
+plain variable; it resolves to an interpose ``Section``, read-only at every
+depth, in which a ``{secret_file: <path>}`` leaf is a ``Secret`` (design 0012).
+A ``secret=True`` setting resolves to a ``Secret``: call ``reveal()`` where the
+value is used, never ``str()`` (which gives the mask).
 
 To add a setting, add it to SETTINGS and to Config, and read it in load_config.
 The wiki's settings table is generated from SETTINGS (``scripts/gen-wiki.py``),
@@ -40,9 +44,19 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
+from types import MappingProxyType
 
 from interpose.secret import Secret
-from interpose.settings import ConfigError, Setting, Settings, Value, one_of, port, positive
+from interpose.settings import (
+    ConfigError,
+    Section,
+    Setting,
+    Settings,
+    Value,
+    one_of,
+    port,
+    positive,
+)
 
 from mitm_proxy.scope import parse_pattern
 
@@ -55,6 +69,7 @@ __all__ = [
     "Config",
     "ConfigError",
     "Secret",
+    "Section",
     "Value",
     "load_config",
 ]
@@ -74,7 +89,10 @@ _REF = re.compile(r"^[A-Za-z_][\w.]*:[A-Za-z_][\w.]*$")
 def _items(value: Value) -> tuple[str, ...]:
     if not isinstance(value, tuple):  # pragma: no cover - a list setting is a tuple
         raise ValueError("expected a list")
-    return value
+    items = tuple(item for item in value if isinstance(item, str))
+    if len(items) != len(value):  # pragma: no cover - a list setting's items are str
+        raise ValueError("expected a list of strings")
+    return items
 
 
 def _host_patterns(value: Value) -> None:
@@ -106,6 +124,17 @@ def _no_repeats(value: Value) -> None:
     items = _items(value)
     if len(set(items)) != len(items):
         raise ValueError("a middleware is listed twice")
+
+
+def _middleware_config(value: Value) -> None:
+    """middleware.config: each entry, `<name>: {...}`, is a mapping for that middleware."""
+    if not isinstance(value, Section):  # pragma: no cover - a section setting is a Section
+        raise ValueError("expected a mapping")
+    for name, entry in value.items():
+        if not isinstance(entry, Section):
+            raise ValueError(
+                f"{name!r} is not a mapping: give the middleware's options as `{name}: {{...}}`"
+            )
 
 
 def _user_password(value: Value) -> None:
@@ -203,6 +232,15 @@ SETTINGS = Settings(
             check=_no_repeats,
         ),
         Setting(
+            "middleware.config",
+            "",
+            "Options for each middleware, by name: `<name>: {...}`, passed to its class's "
+            "constructor. A `{secret_file: <path>}` leaf is read as a secret. From the config "
+            "file or `_FILE`, never a plain variable.",
+            is_section=True,
+            check=_middleware_config,
+        ),
+        Setting(
             "middleware.hook_timeout_ms",
             5000,
             "A middleware hook that runs longer than this has failed, and is skipped for the flow.",
@@ -262,6 +300,7 @@ SETTINGS = Settings(
 CONFIG_ENV = SETTINGS.config_env
 
 _NO_SECRET = Secret("")
+_NO_OPTIONS: Mapping[str, Section] = MappingProxyType({})
 
 
 @dataclass(frozen=True)
@@ -283,6 +322,8 @@ class Config:
     # name -> "module:attribute"
     middleware_available: Mapping[str, str] = field(default_factory=dict)
     middleware_chain: tuple[str, ...] = ()
+    # name -> that middleware's options, passed to its constructor (design 0012). Read-only.
+    middleware_config: Mapping[str, Section] = _NO_OPTIONS
     hook_timeout_ms: int = 5000
     max_buffer_bytes: int = 67108864
     ca_cert: str = ""
@@ -321,6 +362,19 @@ def load_config(path: Path | None = None, environ: Mapping[str, str] | None = No
                 f"(known: {', '.join(sorted(available)) or 'none'})"
             )
 
+    # Options for a middleware that can't run are a mistake (a typo, or one left behind).
+    # There are no built-in middleware yet: when there are, they are available too.
+    options: dict[str, Section] = {}
+    for name, entry in r.section("middleware.config").items():
+        if name not in available:
+            raise ConfigError(
+                f"middleware.config: {name!r} is not in middleware.available "
+                f"(known: {', '.join(sorted(available)) or 'none'})"
+            )
+        if not isinstance(entry, Section):  # pragma: no cover - its check refused it
+            raise ConfigError(f"middleware.config.{name}: expected a mapping")
+        options[name] = entry
+
     ca_cert, ca_key = r.str("ca.cert"), r.secret("ca.key")
     if bool(ca_cert) != bool(ca_key):
         raise ConfigError("ca.cert and ca.key: set both, or neither")
@@ -342,6 +396,7 @@ def load_config(path: Path | None = None, environ: Mapping[str, str] | None = No
         intercept_hosts=r.list("intercept.hosts"),
         middleware_available=available,
         middleware_chain=chain,
+        middleware_config=MappingProxyType(options),
         hook_timeout_ms=r.int("middleware.hook_timeout_ms"),
         max_buffer_bytes=r.int("body.max_buffer_bytes"),
         ca_cert=ca_cert,

@@ -124,3 +124,24 @@ def test_scope_check(write_config: Callable[..., Path], host: str, code: int, te
     result = runner.invoke(app, ["scope", "check", host, "-c", str(path)])
     assert result.exit_code == code
     assert text in (result.stdout + result.stderr)
+
+
+def test_middleware_config_is_shown_with_secret_leaves_masked(
+    tmp_path: Path, write_config: Callable[..., Path]
+) -> None:
+    token = tmp_path / "token"
+    token.write_text("s3cret\n", encoding="utf-8")
+    path = write_config(
+        "middleware:\n  available: ['cap=pkg.mod:Cap']\n"
+        "  config:\n    cap: {dir: /var/cap, enabled: true, ids: [1, 2],\n"
+        f"           token: {{secret_file: {token}}}}}\n"
+    )
+    result = runner.invoke(app, ["config", "-c", str(path)])
+    assert result.exit_code == 0
+    assert (
+        'middleware.config = {"cap": {"dir": "/var/cap", "enabled": true, "ids": [1, 2], '
+        '"token": ********}}  (file)'
+    ) in result.stdout
+    assert "s3cret" not in result.output
+    unset = runner.invoke(app, ["config", "-c", str(write_config(""))])
+    assert "middleware.config =   (default)" in unset.stdout

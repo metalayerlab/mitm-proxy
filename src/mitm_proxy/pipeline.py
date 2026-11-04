@@ -368,12 +368,20 @@ def _stops(result: Any) -> bool:
 
 
 def load_middleware(
-    available: Mapping[str, str], chain: Sequence[str]
+    available: Mapping[str, str],
+    chain: Sequence[str],
+    options: Mapping[str, Mapping[str, Any]] | None = None,
 ) -> list[tuple[str, Middleware]]:
-    """Import the chain's middleware from the registry (name -> "module:attribute")."""
+    """Import the chain's middleware from the registry (name -> "module:attribute").
+
+    A class is constructed with its entry in ``options`` (``middleware.config``, design 0012) as
+    one positional argument, a read-only mapping, or with no arguments when it has no entry. The
+    middleware validates its options in its constructor: whatever it raises is a StartupError.
+    """
     loaded: list[tuple[str, Middleware]] = []
     for name in chain:
         ref = available[name]
+        entry = None if options is None else options.get(name)
         module_name, _, attribute = ref.partition(":")
         try:
             obj: Any = importlib.import_module(module_name)
@@ -382,10 +390,18 @@ def load_middleware(
         except Exception as e:
             raise StartupError(f"middleware {name!r}: cannot load {ref}: {e}") from e
         if isinstance(obj, type) and issubclass(obj, Middleware):
+            call = f"{ref}()" if entry is None else f"{ref}(<middleware.config.{name}>)"
+            # Any: Middleware's own __init__ takes nothing; a subclass's may take the options.
+            cls: Any = obj
             try:
-                obj = obj()
+                obj = cls() if entry is None else cls(entry)
             except Exception as e:
-                raise StartupError(f"middleware {name!r}: {ref}() failed: {e}") from e
+                raise StartupError(f"middleware {name!r}: {call} failed: {e}") from e
+        elif entry is not None:
+            raise StartupError(
+                f"middleware {name!r}: middleware.config has options for it, but {ref} is an "
+                "instance, not a class: there is nothing to construct"
+            )
         if not isinstance(obj, Middleware):
             raise StartupError(f"middleware {name!r}: {ref} is not a Middleware")
         try:
