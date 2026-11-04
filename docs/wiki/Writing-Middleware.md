@@ -79,13 +79,34 @@ middleware:
 | Hook | Called | Returns |
 |---|---|---|
 | `applies_to(flow)` | Once, when the request headers arrive | `False`: no hooks of this middleware run for the flow, and its bodies aren't buffered for it |
-| `on_request(flow)` | After the request body is read | an `Action` |
+| `on_request(flow)` | After the request body is read (on a [streaming flow](#observe-only-middleware-and-streaming), on the head, before it) | an `Action` |
 | `on_request_chunk(flow, chunk, is_last)` | For each chunk of a request that has a body | `None` (unchanged) or replacement `bytes` |
-| `on_response(flow)` | After the response body is read | an `Action` |
+| `on_response(flow)` | After the response body is read (on a streaming flow, on the head, before it) | an `Action` |
 | `on_response_chunk(flow, chunk, is_last)` | For each chunk of a response that may have a body | `None` or replacement `bytes` |
 | `on_done(flow)` | Once, after the flow has ended, however it ended | nothing (observe only) |
 
-Every hook except `applies_to` must be an `async def`: a plain `def` hook stops startup (or refuses a new configuration) with `middleware '<name>': <hook> must be an async function` (design 0011). In this version bodies are buffered, so a chunk hook is called once per body, with the whole body and `is_last=True`. Write chunk hooks as if chunks could be partial: a streaming release will call them per chunk without changing the signature.
+Every hook except `applies_to` must be an `async def`: a plain `def` hook stops startup (or refuses a new configuration) with `middleware '<name>': <hook> must be an async function` (design 0011). A flow's bodies are buffered unless every middleware that applies to it is [observe-only](#observe-only-middleware-and-streaming); on a buffered flow a chunk hook is called once per body, with the whole body and `is_last=True`. Write chunk hooks as if chunks could be partial: on a streaming flow they are called per chunk, with the same signature.
+
+## Observe-only middleware and streaming
+
+A middleware that only reads bodies (to log, measure or record them) can say so, and then it doesn't hold the traffic back (design 0012):
+
+```python
+class TokenCounter(Middleware):
+    observe_only = True  # my chunk hooks never change a body
+
+    async def on_response_chunk(self, flow: Flow, chunk: bytes, is_last: bool) -> None:
+        flow.metadata["bytes"] = flow.metadata.get("bytes", 0) + len(chunk)
+```
+
+- **When a flow streams.** If every middleware that applies to a flow is observe-only, neither body is buffered. Each chunk is written onward first (to the origin, or to the client) and then passed, unchanged, to each middleware's chunk hook in chain order. The hooks are awaited in turn, so a slow hook slows the transfer rather than piling data up in memory. The last call has `is_last=True` and an empty chunk (`b""`); a body that never ends (the client went away) never gets it, and `on_done` still runs. A server-sent-event stream from an LLM API reaches the client event by event.
+- **The heads.** `on_request` and `on_response` run on the heads, before the bodies. Header changes, `STOP` (with your own `flow.response`) and `DENY` work as on any flow; a response `DENY` is still a `502`, since the head hasn't gone yet.
+- **`read_all()` raises** `RuntimeError` on a streaming flow: nothing holds the body, so a hook that wants it reads it from the chunk hooks (and keeps what it needs, within a bound of its own).
+- **Return `None`.** Bytes from an observe-only chunk hook are a wrong result: it is logged (`… but it is observe-only: it must return None`), counted in `mitm_proxy_middleware_failures_total`, and your middleware is skipped for the rest of the flow. The stream carries on untouched.
+- **No `on_error = "fail"`.** Once a streamed head has gone, a failure can't become a `502`, so `observe_only = True` with `on_error = "fail"` stops startup (`observe_only can't be combined with on_error = 'fail'`).
+- **Mixed flows buffer.** If any middleware that applies isn't observe-only (one that overrides only `on_request` counts too: set `observe_only = True` on it if it never touches a body), the flow buffers as before, and observe-only middleware get each body as one chunk with `is_last=True`: the body as sent, after the other middleware's chunk hooks, wherever they sit in the chain. `body.max_buffer_bytes` applies only to buffered flows.
+- **Framing.** An observe-only middleware is not mutation-capable: a streaming flow keeps the origin's `Content-Length`, and a body of unknown length (chunked, close-delimited, HTTP/2 DATA frames) goes out as it came.
+- **Don't** let a request body stay unread on purpose: a `DENY` or local answer on a streaming flow's head leaves it unread. An HTTP/1.1 client's connection is then reused only if the whole unread body had already arrived; otherwise it is closed after the response (the server discards what has arrived but never waits for more), as when an upstream error stops a passed-through body.
 
 ## Actions
 
@@ -128,6 +149,8 @@ Headers are a case-insensitive multimap with lower-case names (`get`, `get_all`,
 | `complete` | The last byte went to the client (after every hook has run, so hooks never see it set) |
 
 With `proxy.server_timing` on, the proxy adds its own `Server-Timing` field to the response head after your response hooks have run, so you never see it in `flow.response.headers` and can't remove it. An origin's own `Server-Timing` is an ordinary header you can read or change.
+
+On a [streaming flow](#observe-only-middleware-and-streaming) the stamps keep their meaning: `ttfb` is still the origin's time from the request being sent to its response headers, and `complete` the last byte to the client. What moves is when the head goes out: before the response body, not after it. So `Server-Timing`, written with the head, measures the flow up to the head (`mitm-proxy`), and its `mitm-mw` holds only the hooks run by then (the request's, and `on_response`); the response's chunk hooks come after. The access log line, written when the flow ends, has the whole flow in `total` and every hook in `mw`.
 
 The derived durations, in seconds, are `connect` (waiting for an upstream connection), `ttfb` (the origin's share: request sent to response headers), `middleware_total` and `total`. `timings.middleware` holds the time each middleware has spent in its hooks so far, by name.
 
@@ -204,7 +227,7 @@ class Audit(Middleware):
 - **The timeout is per hook call.** `middleware.hook_timeout_ms` (5 s by default) or your `timeout` bounds each call: every `on_request`, every `on_response`, every chunk-hook call and `on_done`, each on its own. It isn't a budget for the whole flow.
 - **Be cancel-safe.** A timeout cancels your hook at whatever `await` it's in. Release what you hold in `try`/`finally` or `async with`, and never swallow `asyncio.CancelledError` (no bare `except BaseException:` that carries on): re-raise it. A hook that catches the cancellation and returns anyway is a timeout failure (logged `late: swallowed`), and its result is thrown away.
 - **Expect to fail safely.** A hook that raises, returns the wrong type, or runs longer than `middleware.hook_timeout_ms`, is logged with your middleware's name and the flow ID, and your middleware is skipped for the rest of that flow. The traffic carries on without it, unless your middleware fails closed (below).
-- **`on_error` and `timeout` are reserved attributes.** The pipeline reads them from your middleware (design 0010); don't use the names for anything else, such as an HTTP client's timeout. The middleware's name is always its key in `middleware.available` (or its built-in name, `capture`), whatever a `name` attribute says.
+- **`on_error`, `timeout` and `observe_only` are reserved attributes.** The pipeline reads them from your middleware (designs 0010 and 0012); don't use the names for anything else, such as an HTTP client's timeout. `observe_only` must be `True` or `False`. The middleware's name is always its key in `middleware.available` (or its built-in name, `capture`), whatever a `name` attribute says.
 
 ## Failing closed, and your own timeout
 
@@ -222,23 +245,24 @@ class Blocklist(Middleware):
 - **`on_error = "fail"`:** when one of its hooks raises, times out or returns the wrong type, the flow ends with `502 middleware <name> failed`, in either phase (`applies_to`, `on_request`, `on_request_chunk`, `on_response` or `on_response_chunk`; design 0011). The body names the middleware and nothing else: never the exception or a value. A deliberate `DENY` from it is unchanged (`403` on the request), so a `403` is always a decision and a `502 middleware <name> failed` is always a crash. The outcome is `denied:<name>`, status `502`. The failure is still logged and counted in `mitm_proxy_middleware_failures_total`. If `applies_to` is the hook that failed, no middleware has been selected yet, so none gets `on_done` for that flow. Bodies over `body.max_buffer_bytes` still skip the body hooks, but a failed `applies_to` denies them too.
 - **`on_done` always fails open,** whatever `on_error` says: the flow has already ended.
 - **`timeout`:** seconds (a number above 0) for each of its hook calls; `NO_LIMIT` for none. A wrong value for either attribute stops startup with a one-line error naming the middleware.
-- **Narrow with `applies_to`.** Every flow a middleware applies to is buffered, and a middleware with a chunk hook makes its flows' bodies go out chunked. Some origins refuse chunked uploads (`411`).
-- **Bodies over `body.max_buffer_bytes`** skip middleware entirely and stream through.
+- **Narrow with `applies_to`.** Every flow a middleware applies to is buffered (unless all of them are observe-only), and a middleware with a chunk hook that isn't observe-only makes its flows' bodies go out chunked. Some origins refuse chunked uploads (`411`).
+- **Bodies over `body.max_buffer_bytes`** skip middleware entirely and stream through (on buffered flows; a streaming flow has no buffer limit).
 - **Don't start background tasks per chunk.** Await your work in the hook; the pipeline relies on it for backpressure.
 
 ## The built-in capture middleware
 
-`capture` ships with mitm-proxy (`mitm_proxy.middleware.capture:Capture`) and needs no `middleware.available` entry: put `capture` in `middleware.chain` and give it options in `middleware.config.capture` ([its options](In-Depth-Configuration#capture)). It records each flow one of its rules matches as one JSON object per line, written from `on_done`, so local answers, denies, proxy errors and aborted flows are recorded too:
+`capture` ships with mitm-proxy (`mitm_proxy.middleware.capture:Capture`) and needs no `middleware.available` entry: put `capture` in `middleware.chain` and give it options in `middleware.config.capture` ([its options](In-Depth-Configuration#capture)). It is [observe-only](#observe-only-middleware-and-streaming): it collects the bodies from its chunk hooks, so a flow it is alone on (or shares only with other observe-only middleware) streams, and a server-sent-event answer reaches the client as it is produced. It records each flow one of its rules matches as one JSON object per line, written from `on_done`, so local answers, denies, proxy errors and aborted flows are recorded too:
 
 ```json
 {"rule": "inbound-api", "direction": "inbound", "flow": "9eba5076…", "outcome": "origin",
  "request": {"method": "POST", "url": "http://api.internal:8000/v1/answer?api_key=[REDACTED]",
              "headers": [["content-type", "application/json"], ["authorization", "[REDACTED]"]],
              "body": "{\"question\": \"…\"}"},
- "response": {"status": 200, "headers": [["content-type", "application/json"]], "body": "{…}"},
+ "response": {"status": 200, "headers": [["content-type", "text/event-stream"]],
+              "body": "data: {\"delta\": \"…\"}\n\ndata: [DONE]\n\n"},
  "timings": {"start": "2026-11-03T10:15:02.123456Z", "ttfb_ms": 812.4,
              "end": "2026-11-03T10:15:09.551021Z"},
- "streamed": false}
+ "streamed": true}
 ```
 
 (Shown wrapped; on disk it's one line.)
@@ -246,10 +270,12 @@ class Blocklist(Middleware):
 - **`flow`** is the flow ID, to join with the access log; **`outcome`** is written as the access log writes it (`origin`, `local:<name>`, `denied:<name>`, `error:<status>`, `aborted`). **`direction`** is the flow's: `inbound` or `egress`. It's a different thing from the `direction` label (`request`/`response`) of `mitm_proxy_oversize_passthrough_total`, which says which body was too big.
 - **Headers** are `[name, value]` pairs in order (a header can repeat). Trailers, when a message has them, are under `trailers`, redacted the same way.
 - **Bodies** are as sent, after every middleware's chunk hooks. A body that is UTF-8 text is a string; any other body is base64, with `"body_encoding": "base64"`. A `gzip` or `deflate` body is decoded first, with `"content_decoded": "gzip"`; any other encoding is stored as it came, in base64. A body longer than `max_body_bytes` is cut and gets `"truncated": <its length>`. A body that skipped the hooks because it was over `body.max_buffer_bytes` is `null`, with `"omitted": "oversize"` (so is a compressed body that would decode to more than 64 MiB).
+- **Streamed bodies** are joined into one, and recorded exactly as the same body would be on a buffered flow. Capture holds no more than it needs: `max_body_bytes` of a plain body; up to 64 MiB of a body it must decode or redact whole (gzip or deflate, or JSON with `json_paths`), past which it is `null` with `"omitted": "oversize"`; and `max_body_bytes` of redacted event-stream lines plus the line still arriving (up to 64 MiB). A streamed body that didn't reach its end (an aborted flow) is stored as far as it is safe, with `"incomplete": true`: an event stream's complete lines, redacted, or a plain body's first bytes. One that must be redacted or decoded whole can't be, so it is `null` with `"omitted": "incomplete"`, and so is a streamed request body that was never read (a deny on its head, or an origin that failed first).
 - **`response`** is `null` when the flow ended without one from the origin or a middleware (a deny, a proxy error).
 - **`timings`:** `start` and `end` are UTC wall-clock times, `ttfb_ms` the origin's time to first byte, as in the access log; `null` for a stage that didn't happen.
-- **`streamed`** is always `false` in this version: the bodies are buffered. A later release streams them past capture instead.
+- **`streamed`** is `true` when the response went to the client chunk by chunk, unbuffered; `false` on a buffered flow (another middleware on it changes bodies), a local answer, or no response.
+- **Server-sent events.** In a `text/event-stream` body, `json_paths` apply to each `data:` line whose value parses as JSON (the `data:` prefix, and its one optional space, are kept); every other line (`event:`, `id:`, comments, a `data:` line that isn't JSON, like `data: [DONE]`) is stored as it is. This holds on buffered flows too.
 
-**Test your redaction.** `json_paths` are skipped silently on any body that isn't declared JSON (`application/json` or `*+json`) or doesn't parse, and on server-sent events (`text/event-stream`) for now. A rule that matches such bodies stores them with those values intact, and nothing warns you. Before you rely on a configuration, send it a request that carries a fake credential in every place you redact, and read the file back.
+**Test your redaction.** `json_paths` are skipped silently on any body that isn't declared JSON (`application/json` or `*+json`) or an event stream, or doesn't parse (and on an event stream's `data:` lines that aren't JSON). A rule that matches such bodies stores them with those values intact, and nothing warns you. Before you rely on a configuration, send it a request that carries a fake credential in every place you redact, and read the file back.
 
 Capture fails open: a record it can't write is dropped and counted (`mitm_proxy_capture_records_total{rule, result}`), never an error for the traffic.
