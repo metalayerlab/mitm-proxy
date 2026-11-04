@@ -24,7 +24,7 @@ from typing import Any
 
 from mitm_proxy import __version__
 from mitm_proxy.classify import Decision, decide, peek
-from mitm_proxy.config import SETTINGS, Config
+from mitm_proxy.config import SETTINGS, Config, Secret, Section
 from mitm_proxy.errors import StartupError, UpstreamError, UpstreamTimeout
 from mitm_proxy.exchange import ExchangeContext, handle
 from mitm_proxy.http.flow import ClientConn
@@ -47,6 +47,19 @@ log = logging.getLogger(__name__)
 relayed_log = logging.getLogger("mitm_proxy.relayed")  # proxy.access_log_relayed (0005)
 
 
+def _canonical(node: object) -> Any:
+    """A value as JSON can hold it; a secret (a setting or a section's leaf) only as set/unset."""
+    if isinstance(node, Secret):
+        return {"set": bool(node)}
+    if isinstance(node, Section):
+        return {key: _canonical(child) for key, child in node.items()}
+    if isinstance(node, tuple):
+        return [_canonical(item) for item in node]
+    if isinstance(node, datetime.date):
+        return node.isoformat()
+    return node
+
+
 def config_hash(config: Config) -> str:
     """sha256 over the canonical JSON of the settings; secrets count only as set/unset."""
     secret = {s.key for s in SETTINGS if s.secret}
@@ -55,7 +68,7 @@ def config_hash(config: Config) -> str:
         if key in secret:
             values[key] = {"set": bool(value)}
         else:
-            values[key] = list(value) if isinstance(value, tuple) else value
+            values[key] = _canonical(value)
     canonical = json.dumps(values, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
@@ -134,7 +147,9 @@ class ProxyServer:
         loaded = (
             list(middleware)
             if middleware is not None
-            else load_middleware(config.middleware_available, config.middleware_chain)
+            else load_middleware(
+                config.middleware_available, config.middleware_chain, config.middleware_config
+            )
         )
         # Before the pipeline exists: every name it can report is already a declared label
         # value. The whole registry, so the names a later chain may use are covered too (0009).

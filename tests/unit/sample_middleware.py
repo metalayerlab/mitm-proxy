@@ -1,5 +1,8 @@
 """Middleware for load_middleware tests (importable by module path)."""
 
+from collections.abc import Mapping
+from typing import Any
+
 from mitm_proxy.http.flow import Flow
 from mitm_proxy.pipeline import Action, Middleware
 
@@ -22,3 +25,12 @@ class SyncHook(Middleware):
 
     def on_request(self, flow: Flow) -> Action:  # type: ignore[override]  # the mistake under test
         return Action.CONTINUE
+
+
+class WithOptions(Middleware):
+    """Takes its middleware.config entry (design 0012), and validates it."""
+
+    def __init__(self, options: Mapping[str, Any] | None = None) -> None:
+        self.options = options
+        if options is not None and "bad" in options:
+            raise ValueError("'bad' is not an option")

@@ -1,5 +1,5 @@
 version = 1
-revision = 5
+revision = 3
 requires-python = ">=3.13"
 resolution-markers = [
     "python_full_version >= '3.15'",
@@ -466,8 +466,8 @@ wheels = [
 
 [[package]]
 name = "interpose"
-version = "0.3.0"
-source = { git = "https://github.com/metalayerlab/interpose?rev=v0.3.0#a12ea37b7156981465406221097267915fdd69ed" }
+version = "0.4.1"
+source = { git = "https://github.com/metalayerlab/interpose?rev=v0.4.1#21a13bd991b8d1364698b323ababd957b9587961" }
 dependencies = [
     { name = "pyyaml" },
 ]
@@ -610,7 +610,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.115" },
     { name = "h11", specifier = ">=0.16.0" },
     { name = "h2", specifier = ">=4.4.1" },
-    { name = "interpose", git = "https://github.com/metalayerlab/interpose?rev=v0.3.0" },
+    { name = "interpose", git = "https://github.com/metalayerlab/interpose?rev=v0.4.1" },
     { name = "pyyaml", specifier = ">=6.0" },
     { name = "typer", specifier = ">=0.15" },
     { name = "uvicorn", specifier = ">=0.34" },

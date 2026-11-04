@@ -6,7 +6,7 @@ from pathlib import Path
 
 import pytest
 
-from mitm_proxy.config import Config, load_config
+from mitm_proxy.config import Config, Section, load_config
 from mitm_proxy.errors import StartupError, UpstreamConnectError
 from mitm_proxy.http.h1 import H1Upstream
 from mitm_proxy.http.h2 import H2Upstream
@@ -16,6 +16,7 @@ from mitm_proxy.streams import ByteStream
 from mitm_proxy.tls.terminate import TLSStream
 from tests.harness import Origin, send
 from tests.helpers import memory_pair, trusting_client_context
+from tests.unit.sample_middleware import WithOptions
 
 
 def make_config(tmp_path: Path, **env: str) -> Config:
@@ -357,3 +358,55 @@ async def test_start_failure_is_a_startup_error(
 def test_is_loopback() -> None:
     assert _is_loopback("127.0.0.1") and _is_loopback("::1") and _is_loopback("localhost")
     assert not _is_loopback("0.0.0.0") and not _is_loopback("example.org")  # noqa: S104 - a test value
+
+
+# middleware.config on reload (design 0012, section 2; refused as 0011 says).
+
+
+def _options_config(tmp_path: Path, options: str) -> Config:
+    path = tmp_path / "options.yaml"
+    path.write_text(
+        "middleware:\n"
+        "  available: ['opt=tests.unit.sample_middleware:WithOptions']\n"
+        "  chain: [opt]\n"
+        f"  config:\n    opt: {options}\n",
+        encoding="utf-8",
+    )
+    environ = {"MITM_PROXY_STATE_DIR": str(tmp_path), "MITM_PROXY_PROXY_PEEK_TIMEOUT_MS": "50"}
+    return load_config(path, environ=environ)
+
+
+def _options(proxy: ProxyServer) -> object:
+    middleware = proxy.snapshot.pipeline._entries[0].middleware
+    assert isinstance(middleware, WithOptions)
+    return middleware.options
+
+
+async def test_a_reload_constructs_middleware_again_with_its_new_options(tmp_path: Path) -> None:
+    proxy = ProxyServer(_options_config(tmp_path, "{level: 1}"), connector=Origin().connector)
+    first = proxy.snapshot.pipeline._entries[0].middleware
+    assert _options(proxy) == Section({"level": 1})
+    proxy.apply(_options_config(tmp_path, "{level: 2}"))
+    assert _options(proxy) == Section({"level": 2})
+    assert proxy.snapshot.pipeline._entries[0].middleware is not first
+    await proxy.stop()
+
+
+async def test_a_reload_with_options_the_middleware_refuses_is_refused(tmp_path: Path) -> None:
+    proxy = ProxyServer(_options_config(tmp_path, "{level: 1}"), connector=Origin().connector)
+    before = proxy.snapshot
+    with pytest.raises(StartupError, match=r"middleware 'opt': .* failed: 'bad' is not"):
+        proxy.apply(_options_config(tmp_path, "{bad: 1}"))
+    assert proxy.snapshot is before and _options(proxy) == Section({"level": 1})
+    assert proxy.metrics.config_applies.values == {("applied",): 1.0}
+    await proxy.stop()
+
+
+def test_the_config_hash_counts_a_secret_leaf_only_as_set(tmp_path: Path) -> None:
+    token = tmp_path / "token"
+    token.write_text("one", encoding="utf-8")
+    first = _options_config(tmp_path, f"{{token: {{secret_file: {token}}}, at: 2026-11-04}}")
+    token.write_text("two", encoding="utf-8")
+    second = _options_config(tmp_path, f"{{token: {{secret_file: {token}}}, at: 2026-11-04}}")
+    other = _options_config(tmp_path, f"{{token: {{secret_file: {token}}}, at: 2026-11-05}}")
+    assert config_hash(first) == config_hash(second) != config_hash(other)

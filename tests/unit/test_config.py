@@ -16,6 +16,7 @@ from mitm_proxy.config import (
     DEFAULT_CONFIG_PATH,
     SETTINGS,
     ConfigError,
+    Section,
     load_config,
 )
 
@@ -37,6 +38,7 @@ NAMES = {
     "intercept.hosts": "MITM_PROXY_INTERCEPT_HOSTS",
     "middleware.available": "MITM_PROXY_MIDDLEWARE_AVAILABLE",
     "middleware.chain": "MITM_PROXY_MIDDLEWARE_CHAIN",
+    "middleware.config": "MITM_PROXY_MIDDLEWARE_CONFIG",
     "middleware.hook_timeout_ms": "MITM_PROXY_MIDDLEWARE_HOOK_TIMEOUT_MS",
     "body.max_buffer_bytes": "MITM_PROXY_BODY_MAX_BUFFER_BYTES",
     "ca.cert": "MITM_PROXY_CA_CERT",
@@ -257,3 +259,90 @@ def test_access_log_settings(write_config: Callable[..., Path]) -> None:
     path = write_config("proxy:\n  access_log: true\n")
     cfg = load_config(path, environ={"MITM_PROXY_PROXY_ACCESS_LOG_RELAYED": "true"})
     assert (cfg.access_log, cfg.access_log_relayed) == (True, True)
+
+
+# middleware.config (design 0012, section 2): a section setting, one mapping per middleware.
+
+_AVAILABLE = "middleware:\n  available: ['cap=pkg.mod:Cap', 'other=pkg.mod:Other']\n"
+
+
+def test_middleware_config_is_read_only_options_by_name(
+    write_config: Callable[..., Path],
+) -> None:
+    path = write_config(
+        _AVAILABLE + "  config:\n    cap: {dir: /var/cap, rules: [{host: a}], depth: {n: 1}}\n"
+    )
+    cfg = load_config(path, environ={})
+    assert set(cfg.middleware_config) == {"cap"}
+    options = cfg.middleware_config["cap"]
+    assert isinstance(options, Section)
+    assert options["dir"] == "/var/cap"
+    assert options["rules"] == (Section({"host": "a"}),)
+    with pytest.raises(TypeError):
+        options["dir"] = "/elsewhere"  # type: ignore[index]  # the mistake under test
+    with pytest.raises(TypeError):
+        cfg.middleware_config["other"] = Section()  # type: ignore[index]  # the mistake under test
+
+
+def test_no_middleware_config_is_empty(tmp_path: Path) -> None:
+    cfg = load_config(tmp_path / "missing.yaml", environ={})
+    assert dict(cfg.middleware_config) == {}
+
+
+@pytest.mark.parametrize(
+    ("yaml_text", "message"),
+    [
+        ("  config:\n    nope: {a: 1}\n", r"middleware.config: 'nope' is not in middleware"),
+        ("  config:\n    cap: 3\n", r"middleware.config: 'cap' is not a mapping"),
+        ("  config:\n    cap: [a, b]\n", r"middleware.config: 'cap' is not a mapping"),
+    ],
+)
+def test_middleware_config_errors(
+    write_config: Callable[..., Path], yaml_text: str, message: str
+) -> None:
+    with pytest.raises(ConfigError, match=message):
+        load_config(write_config(_AVAILABLE + yaml_text), environ={})
+
+
+def test_middleware_config_is_never_a_plain_variable(write_config: Callable[..., Path]) -> None:
+    with pytest.raises(ConfigError, match="MITM_PROXY_MIDDLEWARE_CONFIG"):
+        load_config(
+            write_config(_AVAILABLE),
+            environ={"MITM_PROXY_MIDDLEWARE_CONFIG": "{cap: {a: 1}}"},
+        )
+
+
+def test_middleware_config_from_its_file_variable(
+    tmp_path: Path, write_config: Callable[..., Path]
+) -> None:
+    section = tmp_path / "middleware-config.yaml"
+    section.write_text("cap: {a: 1}\n", encoding="utf-8")
+    cfg = load_config(
+        write_config(_AVAILABLE),
+        environ={"MITM_PROXY_MIDDLEWARE_CONFIG_FILE": str(section)},
+    )
+    assert cfg.middleware_config["cap"]["a"] == 1
+    assert cfg.sources["middleware.config"] == "MITM_PROXY_MIDDLEWARE_CONFIG_FILE"
+
+
+def test_a_secret_file_leaf_is_a_secret(tmp_path: Path, write_config: Callable[..., Path]) -> None:
+    token = tmp_path / "token"
+    token.write_text("s3cret\n", encoding="utf-8")
+    path = write_config(
+        _AVAILABLE + f"  config:\n    cap: {{auth: {{token: {{secret_file: {token}}}}}}}\n"
+    )
+    cfg = load_config(path, environ={})
+    leaf = cfg.middleware_config["cap"]["auth"]
+    assert isinstance(leaf, Section)
+    assert isinstance(leaf["token"], Secret)
+    assert leaf["token"].reveal() == "s3cret"  # the trailing newline stripped, as for _FILE
+    assert "s3cret" not in repr(cfg)
+
+
+def test_an_unreadable_secret_file_names_the_key(
+    tmp_path: Path, write_config: Callable[..., Path]
+) -> None:
+    missing = tmp_path / "nope"
+    path = write_config(_AVAILABLE + f"  config:\n    cap: {{token: {{secret_file: {missing}}}}}\n")
+    with pytest.raises(ConfigError, match=r"middleware.config.cap.token"):
+        load_config(path, environ={})
