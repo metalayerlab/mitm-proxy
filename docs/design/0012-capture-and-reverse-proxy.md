@@ -2,7 +2,7 @@
 
 <!-- Add a line for this record to the index in docs/design/README.md (CI checks). -->
 
-Status: Approved (approved by the brain coordinator for Stephen, 2026-11-03)
+Status: Implemented (v0.3.2 to v0.3.6; approved by the brain coordinator for Stephen, 2026-11-03)
 Date: 2026-11-03
 Authors: Stephen Cox; drafted by Claude (Claude Code)
 
