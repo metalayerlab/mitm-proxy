@@ -41,6 +41,8 @@ The Service exposes the admin API (`http`, 8080) and the proxy (`proxy`, 3128). 
 
 State is on an `emptyDir`, so the root CA is regenerated whenever the pod is replaced, and clients must trust the new one each time. For a stable CA, swap it for a PersistentVolumeClaim, or supply the CA from a Secret: `deployment.yaml` has the `secrets` volume and the `MITM_PROXY_CA_CERT_FILE`, `MITM_PROXY_CA_KEY_FILE` and `MITM_PROXY_PROXY_AUTH_FILE` variables commented out, ready to enable. Secrets: SOPS-encrypted Secrets in the GitOps repo, mounted as files. For **capture**, mount a volume read-write at its `dir` (a PersistentVolumeClaim, so captures outlive the pod; an `emptyDir` loses them on every replacement).
 
+With **exits** (design 0013; [In-Depth Configuration](In-Depth-Configuration#exits-and-routing-passport-step-1)), the pod connects only to its exits, so the NetworkPolicy's egress can admit just the exits' Services (and DNS, for their names): a second line of defence behind "never direct". An exit's login goes in a Secret mounted as a file, named by `MITM_PROXY_EXITS_<N>_AUTH_FILE`. The example configuration (`contrib/mitm-proxy.example.yaml`) shows `exits` and `routing` commented out.
+
 ## systemd
 
 ```sh

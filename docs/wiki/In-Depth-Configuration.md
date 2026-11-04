@@ -36,6 +36,9 @@ Generated from the code: don't edit the table, run `uv run scripts/gen-wiki.py`.
 | `proxy.server_timing` | `MITM_PROXY_PROXY_SERVER_TIMING` | `False` | Add a `Server-Timing` header (connect, origin, middleware, proxy times) to every intercepted response, for browser devtools. Tells pages they were intercepted. |
 | `intercept.hosts` | `MITM_PROXY_INTERCEPT_HOSTS` | *(empty list)* | The allowlist: hosts to intercept (`example.org`, `*.example.org`, IP literals). Everything else is tunnelled untouched. Empty: intercept nothing. A list: YAML, or comma-separated. |
 | `reverse` | `MITM_PROXY_REVERSE` | *(empty list)* | Reverse-proxy listeners. Each item has `listen` (the `host:port` this proxy binds) and `upstream` (an `http://` or `https://` host, optional port) it forwards to; every request on a listener is intercepted and sent to its upstream. From the config file or `_FILE`, or the indexed variables `MITM_PROXY_REVERSE_<N>_LISTEN` and `_<N>_UPSTREAM`. Empty: no reverse listeners. A list: YAML, or comma-separated. |
+| `exits` | `MITM_PROXY_EXITS` | *(empty list)* | Exit proxies to send upstream connections through (design 0013). Each item has `name`, `url` (`http://host:port` or `socks5h://host:port`), and optionally `country`, `health`, `retry` and `auth` (a secret `user:password`). From the config file or `_FILE`, or the indexed variables `MITM_PROXY_EXITS_<N>_<FIELD>`. Not empty: routing is on, and nothing ever connects directly unless `routing.allow_direct` allows it. Empty: every connection is direct, as without this setting. A list: YAML, or comma-separated. |
+| `routing.default_via` | `MITM_PROXY_ROUTING_DEFAULT_VIA` | *(empty list)* | The exits, by name, for a site no rule matches; today every site, as there are no rules yet. Only the first is used until exits have health (design 0013). Empty while `exits` is set: every request is refused with a 503. A list: YAML, or comma-separated. |
+| `routing.allow_direct` | `MITM_PROXY_ROUTING_ALLOW_DIRECT` | `False` | Allow the reserved exit name `direct` (a direct connection) in `routing.default_via`. Never a fallback. |
 | `middleware.available` | `MITM_PROXY_MIDDLEWARE_AVAILABLE` | *(empty list)* | Installed middleware that may run, as `name=module:attribute`. A list: YAML, or comma-separated. |
 | `middleware.chain` | `MITM_PROXY_MIDDLEWARE_CHAIN` | *(empty list)* | The middleware to run, by name, in order. A list: YAML, or comma-separated. |
 | `middleware.config` | `MITM_PROXY_MIDDLEWARE_CONFIG` | *(none)* | Options for each middleware, by name: `<name>: {...}`, passed to its class's constructor. A `{secret_file: <path>}` leaf is read as a secret. From the config file or `_FILE`, never a plain variable. |
@@ -85,6 +88,51 @@ reverse:
 - Plain HTTP/1.1 only, for now. TLS and HTTP/2 on a reverse listener are later; until then put a TLS terminator (Caddy, for example) in front and forward plain HTTP.
 
 `reverse` comes from the config file or from `MITM_PROXY_REVERSE_FILE` (a YAML file holding the whole list), or from the indexed variables `MITM_PROXY_REVERSE_<N>_LISTEN` and `MITM_PROXY_REVERSE_<N>_UPSTREAM` (for `N` from 0).
+
+### Exits and routing (passport, step 1)
+
+An **exit** is an outbound proxy that leaves the network somewhere else: an HTTP proxy that supports `CONNECT`, or a SOCKS5 proxy that resolves names itself. With `exits` set, mitm-proxy sends **every** upstream connection through an exit and never connects to a site directly. This is the first step of [design 0013](https://github.com/metalayerlab/mitm-proxy/blob/main/docs/design/0013-region-aware-proxy-controller.md), the region-aware proxy controller ("passport").
+
+```yaml
+exits:
+  - name: exit-a
+    url: http://exit-a.exits:8001       # an HTTP proxy: CONNECT for TLS, absolute form for plain HTTP
+    country: XA
+  - name: exit-b
+    url: http://exit-b.exits:8002
+    country: XB
+  - name: exit-tor
+    url: socks5h://exit-tor.exits:9050  # SOCKS5, names resolved by the exit
+    retry: false
+routing:
+  default_via: [exit-b]
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `name` | *(required)* | Unique; lower-case letters, digits and `-`. `direct` is reserved. It is a metric label value. |
+| `url` | *(required)* | `http://host:port` or `socks5h://host:port`: a port is required, and no path or user info. A password in the URL is refused, so that it never sits in a plain setting: put a login in `auth`. |
+| `country` | *(none)* | An ISO 3166 code, for display. |
+| `health` | *(none)* | The Kubernetes Service whose readiness will be this exit's health; empty means the host part of `url` up to the first dot. **Stored and checked, not yet used:** health comes in step 5. |
+| `retry` | `true` | Whether a blocked page load may be retried through this exit. **Stored, not yet used:** retrying comes in step 10. |
+| `auth` | *(none)* | 🔒 `user:password` for the exit's proxy, as a `{secret_file: <path>}` leaf or `MITM_PROXY_EXITS_<N>_AUTH_FILE`. Sent as `Proxy-Authorization: Basic` to an HTTP exit, or as a SOCKS5 username and password (RFC 1929, at most 255 bytes each). |
+
+`exits` comes from the config file or `MITM_PROXY_EXITS_FILE` (a YAML file holding the whole list), or from the indexed variables `MITM_PROXY_EXITS_<N>_NAME`, `_URL`, `_COUNTRY`, `_HEALTH`, `_RETRY` and `_AUTH_FILE`.
+
+`routing.default_via` names the exits for a site no rule matches, in order; each must be in `exits`. `routing.allow_direct` (default `false`) allows the reserved name `direct`, meaning a direct connection as without exits; without it, `direct` in `default_via` is a configuration error.
+
+**How it routes now.** Every upstream connection, tunnelled and decrypted alike, plain HTTP and reverse listeners too, goes through the **first** exit in `routing.default_via`:
+
+- **HTTP exit:** `CONNECT host:port` (with `Host`, and `Proxy-Authorization` when `auth` is set); a `2xx` answer opens the tunnel. A decrypted site then gets TLS to the origin inside that tunnel, verified as always, with the site's name as SNI. A plain `http://` request goes to the exit in absolute form (`GET http://host/path`) instead.
+- **SOCKS5 exit:** RFC 1928, no authentication or username and password, and a `CONNECT` that names the site by its **domain name**, so the exit resolves it.
+- **mitm-proxy never resolves a site's name when routing is on.** It resolves only the exit's own host. An IP literal is passed on as it is.
+- Pooled connections are kept apart by exit: one opened through `exit-a` is never reused through `exit-b`, or for a direct connection.
+- **Nothing falls back.** If the exit can't be reached, or refuses (`407`, a non-`2xx`, a SOCKS5 failure), the request fails with `502` (`504` on a timeout). There is no failover to the next exit yet (step 5), and never to a direct connection.
+- **No exit to use:** with `exits` set and `routing.default_via` empty, every request is **refused** and sent nowhere: a `CONNECT` gets `503` with `Retry-After: 30` and `Proxy-Status: mitm-proxy; error=destination_unavailable; details="…"`; a decrypted or plain-HTTP request gets a local `503` with the same headers (its flow's outcome is `local:routing`, which `on_done` sees; no other hook runs). Each refusal is logged at INFO with the site and exit, never the path, and counted in `mitm_proxy_route_refused_total{exit, reason}` (`exit` is empty when no exit was chosen; `reason` is `no_rule`). That metric appears only once `exits` is set.
+
+With `exits` empty (the default), nothing here applies and mitm-proxy behaves as before.
+
+**Passport, step 1: what works now, and what comes later.** Now: the `exits` setting, chaining through HTTP and SOCKS5 exits, `routing.default_via` (its first exit) and `routing.allow_direct`, the pool kept apart by exit, the fail-closed refusal, and the throughput gate script (`benchmarks/throughput_gate.py`, see [Testing Guide](Testing-Guide#the-throughput-gate)). Later steps of design 0013: per-site rules and the `routes` and `route check` commands (step 4); exit health, failover within a rule's exits and the full `503` page (step 5); `inspect` on rules (step 7); services and stickiness (step 8); region-block detection and the block log (step 9); retrying a blocked page (step 10); learning and proposals (step 11); and the `/v1` routing endpoints, the access log's `exit=` and the other routing metrics with them.
 
 ### Middleware
 
@@ -257,6 +305,7 @@ This project's secrets:
 | Setting | What it grants | Supply it as |
 |---|---|---|
 | `proxy.auth` | Use of the proxy (`user:password`) | `MITM_PROXY_PROXY_AUTH_FILE` |
+| `exits[N].auth` | Use of an exit that requires a login (`user:password`) | `MITM_PROXY_EXITS_<N>_AUTH_FILE`, or a `{secret_file: <path>}` leaf |
 | `ca.key` | Signing certificates that every client trusting the root accepts: the most sensitive value here | `MITM_PROXY_CA_KEY_FILE`, with `MITM_PROXY_CA_CERT_FILE` for the (public) certificate |
 
 Inside the proxy a secret is a `Secret` value, which prints as `********` in logs, errors and `repr()`; only the code that authenticates clients or loads the CA reads the value itself. The status endpoint and the configuration hash record only whether a secret is set.

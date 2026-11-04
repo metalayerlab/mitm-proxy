@@ -48,6 +48,25 @@ intercept:
 #   - listen: "[::1]:8082"
 #     upstream: https://llm-gateway.internal
 
+# Exits (design 0013): outbound proxies every upstream connection goes through. Each has a
+# `name` (lower-case, digits, '-'; `direct` is reserved), a `url` (http://host:port or
+# socks5h://host:port, no user info), and optionally `country`, `health`, `retry` and `auth`
+# (a login, as {secret_file: <path>}). With exits set, nothing connects directly, and with no
+# exit to use a request is refused (503). Empty (the default): every connection is direct.
+# exits:
+#   - name: exit-a
+#     url: http://exit-a.exits:8001
+#     country: XA
+#   - name: exit-tor
+#     url: socks5h://exit-tor.exits:9050
+#     retry: false
+
+routing:
+  # The exits for a site no rule matches, in order; only the first is used for now
+  default_via: []
+  # Allow the reserved exit name `direct` (a direct connection) in default_via
+  allow_direct: false
+
 middleware:
   # Installed middleware that may run, as name=module:attribute
   available: []
