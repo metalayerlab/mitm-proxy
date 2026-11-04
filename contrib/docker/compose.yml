@@ -9,7 +9,7 @@
 
 services:
   mitm-proxy:
-    image: ghcr.io/metalayerlab/mitm-proxy:0.3.4 # x-release-please-version
+    image: ghcr.io/metalayerlab/mitm-proxy:0.3.5 # x-release-please-version
     container_name: mitm-proxy
     restart: unless-stopped
 
