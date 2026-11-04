@@ -531,8 +531,10 @@ def test_the_upstream_pool_follows_a_config_change(tmp_path: Path) -> None:
             MITM_PROXY_UPSTREAM_CONNECT_TIMEOUT_MS="3000",
             MITM_PROXY_UPSTREAM_IDLE_TIMEOUT_MS="4000",
             MITM_PROXY_UPSTREAM_MAX_CONNECTIONS_PER_HOST="2",
+            MITM_PROXY_UPSTREAM_READ_TIMEOUT_MS="8000",
         )
     )
     pool = proxy.pool
-    assert (pool.read_timeout, pool.connect_timeout, pool.idle_timeout) == (9.0, 3.0, 4.0)
+    # The read timeout is upstream.read_timeout_ms now, not proxy.idle_timeout_ms (design 0012).
+    assert (pool.read_timeout, pool.connect_timeout, pool.idle_timeout) == (8.0, 3.0, 4.0)
     assert pool.max_per_host == 2

@@ -49,6 +49,6 @@ async def test_example() -> None:
 
 **Every protocol pairing.** Behaviour that touches framing or headers is parametrized over the four client/origin pairings (`PAIRS` in `test_exchange.py`).
 
-**Time.** Use short timeouts (tens of milliseconds) rather than patching the clock; `hook_timeout`, `peek_timeout_ms` and `idle_timeout` are all settable.
+**Time.** Use short timeouts (tens of milliseconds) rather than patching the clock; `hook_timeout`, `peek_timeout_ms` and `idle_timeout` are all settable. Where the point is a real, minutes-long value (a five-minute `upstream.read_timeout_ms` against an origin silent that long), run the test with `tests.helpers.run_virtual`: its event loop's clock jumps to the next timer whenever every task is waiting, so the configured timeouts run unchanged in moments. It suits the in-memory bench only, with no sockets or threads, and the test is a plain `def`, not `async def`.
 
 **Integration tests** bind `127.0.0.1` on free ports and never leave the machine.

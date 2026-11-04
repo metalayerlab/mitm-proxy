@@ -396,6 +396,13 @@ SETTINGS = Settings(
             check=positive,
         ),
         Setting(
+            "upstream.read_timeout_ms",
+            120000,
+            "How long to wait for the next bytes from an origin: its response head, and each read "
+            "of its body. Not a limit on the whole response. Raise it for slow origins.",
+            check=positive,
+        ),
+        Setting(
             "upstream.max_connections_per_host",
             6,
             "The most upstream connections kept to one host, port and SNI.",
@@ -441,6 +448,7 @@ class Config:
     upstream_extra_ca_file: str = ""
     upstream_connect_timeout_ms: int = 10000
     upstream_idle_timeout_ms: int = 60000
+    upstream_read_timeout_ms: int = 120000
     upstream_max_connections_per_host: int = 6
     # Setting key -> the resolved value, for display; secret settings hold a Secret.
     values: Mapping[str, Value] = field(default_factory=dict, repr=False)
@@ -525,6 +533,7 @@ def load_config(path: Path | None = None, environ: Mapping[str, str] | None = No
         upstream_extra_ca_file=r.str("upstream.extra_ca_file"),
         upstream_connect_timeout_ms=r.int("upstream.connect_timeout_ms"),
         upstream_idle_timeout_ms=r.int("upstream.idle_timeout_ms"),
+        upstream_read_timeout_ms=r.int("upstream.read_timeout_ms"),
         upstream_max_connections_per_host=r.int("upstream.max_connections_per_host"),
         values=dict(r.values),
         sources=dict(r.sources),

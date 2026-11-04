@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import selectors
 import ssl
+from collections.abc import Coroutine
+from typing import Any
 
 from mitm_proxy.tls.ca import CertificateAuthority, generate_root
 
@@ -112,3 +115,43 @@ def memory_pair() -> tuple[MemoryStream, MemoryStream]:
     a, b = MemoryStream(), MemoryStream()
     a.peer, b.peer = b, a
     return a, b
+
+
+class _JumpingSelector(selectors.DefaultSelector):
+    """Polls without blocking; when nothing is ready, moves the loop's clock to the next timer."""
+
+    def __init__(self, loop: VirtualClockLoop) -> None:
+        super().__init__()
+        self._loop = loop
+
+    def select(self, timeout: float | None = None) -> list[tuple[selectors.SelectorKey, int]]:
+        events = super().select(0)
+        if events or timeout == 0:
+            return events
+        if timeout is None:
+            # Nothing ready and no timer: the coroutine under test can never finish.
+            raise RuntimeError("deadlock: nothing is ready and no timer is pending")
+        self._loop.now += timeout
+        return []
+
+
+class VirtualClockLoop(asyncio.SelectorEventLoop):
+    """An event loop whose clock jumps ahead whenever every task is waiting.
+
+    For timeouts measured in minutes, run in moments: everything here is in memory on one loop,
+    so "nothing is ready" means only a timer can wake anything. Wall-clock time (time.monotonic)
+    is untouched.
+    """
+
+    def __init__(self) -> None:
+        self.now = 0.0
+        super().__init__(_JumpingSelector(self))
+
+    def time(self) -> float:
+        return self.now
+
+
+def run_virtual[T](coro: Coroutine[Any, Any, T], limit: float = 3600.0) -> T:
+    """Run coro on a VirtualClockLoop, failing it after limit virtual seconds."""
+    with asyncio.Runner(loop_factory=VirtualClockLoop) as runner:
+        return runner.run(asyncio.wait_for(coro, limit))

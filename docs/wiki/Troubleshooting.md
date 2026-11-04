@@ -58,6 +58,10 @@ For the trend rather than one request, the same stages are histograms on `/metri
 
 In a browser, set `proxy.server_timing: true` and open devtools (Network → a request → Timing): the same breakdown appears under Server Timing as `mitm-connect`, `mitm-origin`, `mitm-mw` and `mitm-proxy`, and `mitm-local` names the middleware that answered a request itself. These show up even for responses no middleware ran on. See [In-Depth Configuration](In-Depth-Configuration).
 
+### `504 the origin did not answer in time` from a slow origin
+
+The origin sent nothing for `upstream.read_timeout_ms` (default two minutes): no response headers, or a pause that long in its body. Some origins are slow by nature, LLM APIs above all, which can think for minutes before the first byte. Raise `upstream.read_timeout_ms` (`300000` for five minutes); a reload applies it to the requests that start afterwards. Don't raise `proxy.idle_timeout_ms` for this: it doesn't end an open request anyway, and a larger value only keeps idle client connections and tunnels open longer. A `504` with `connecting to … timed out` or `no free connection` is `upstream.connect_timeout_ms` instead. See [In-Depth Configuration](In-Depth-Configuration), under Timeouts.
+
 ### A flow ends with `outcome=aborted`
 
 The flow ended before the whole response was sent. Usually the client gave up: a browser cancels image and media requests it no longer needs (an HTTP/2 stream reset), or the user navigated away. Occasional `aborted` lines are normal. If every flow to one host ends that way, check the proxy's warnings for that flow ID: an origin that stops sending part-way also ends here.

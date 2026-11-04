@@ -117,8 +117,8 @@ class ConnectionPool:
         self.max_per_host = max_per_host
         self.idle_timeout = idle_timeout
         self.connect_timeout = connect_timeout
-        self.read_timeout = read_timeout
         self._connections: dict[Target, list[Upstream]] = {}
+        self.read_timeout = read_timeout
         self._addresses: dict[int, tuple[str, int] | None] = {}
         self._pending: dict[Target, int] = {}
         self._last_used: dict[int, float] = {}
@@ -131,6 +131,22 @@ class ConnectionPool:
         self._closing: set[asyncio.Task[None]] = set()
         self._sweeper: asyncio.Task[None] | None = None
         self._closed = False
+
+    @property
+    def read_timeout(self) -> float:
+        """How long to wait for the next bytes from an origin (upstream.read_timeout_ms)."""
+        return self._read_timeout
+
+    @read_timeout.setter
+    def read_timeout(self, value: float) -> None:
+        # Pooled connections keep the value they were opened with unless told: a reload must
+        # reach the reads that start on them afterwards too (design 0012), not just new ones.
+        self._read_timeout = value
+        for conns in self._connections.values():
+            for conn in conns:
+                conn.read_timeout = value
+                if isinstance(conn, H2Upstream):
+                    conn.window_timeout = value
 
     def counts(self) -> dict[str, int]:
         """Open connections by protocol (for metrics)."""
