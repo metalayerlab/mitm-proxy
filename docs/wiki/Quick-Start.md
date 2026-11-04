@@ -53,6 +53,26 @@ Without `--cacert`, curl refuses the proxy's certificate: that's the check worki
 
 The CA is generated on first start in `/var/lib/mitm-proxy/ca/`. Mount a volume there (`-v ./state:/var/lib/mitm-proxy`) to keep it, or you'll have a new one to trust after every new container.
 
+## Reverse proxy: record a service's own traffic
+
+To record what a service is asked, without configuring any client, put mitm-proxy in front of it with a reverse listener. It binds an address and forwards every request to one fixed upstream — no proxy settings, no CA to install, because the clients talk plain HTTP to the listener.
+
+```sh
+docker run -d --name mitm-proxy \
+  -p 127.0.0.1:8080:8080 -p 127.0.0.1:8081:8081 \
+  -e MITM_PROXY_REVERSE_0_LISTEN=0.0.0.0:8081 \
+  -e MITM_PROXY_REVERSE_0_UPSTREAM=http://host.docker.internal:8000 \
+  -e MITM_PROXY_PROXY_ACCESS_LOG=true \
+  ghcr.io/metalayerlab/mitm-proxy:latest
+```
+
+```sh
+curl -s http://127.0.0.1:8081/v1/health      # goes to the upstream on :8000
+docker logs mitm-proxy | grep mitm_proxy.flows
+```
+
+The upstream is told its own name as `Host`; the client's `Host` and address are added as `X-Forwarded-Host` and `X-Forwarded-For`. See [In-Depth Configuration](In-Depth-Configuration#reverse-proxy-mode).
+
 ## Next steps
 
 - [In-Depth Configuration](In-Depth-Configuration): every setting

@@ -60,9 +60,11 @@ class ExchangeContext:
     max_buffer: int
     idle_timeout: float
     pipeline: Pipeline | None = None  # None: nothing applies
-    # Intercepted TLS: the fixed upstream. None: plain-HTTP proxying, routed per request.
+    # Intercepted TLS or a reverse listener: the fixed upstream. None: plain-HTTP proxying,
+    # routed per request.
     target: Target | None = None
     scope: Allowlist | None = None  # plain-HTTP proxying: which hosts get middleware
+    direction: str = "egress"  # this source's flow direction (design 0012): inbound | egress
     server_timing: bool = False  # add a Server-Timing field to intercepted responses (0004)
     access_log: bool = False  # a line per intercepted flow (0005)
     access_log_relayed: bool = False  # a line per relayed plain-HTTP request (0005)
@@ -263,6 +265,7 @@ async def handle(ctx: ExchangeContext, incoming: IncomingRequest, responder: Res
         protocol=ctx.protocol,
         client_conn=ctx.client_conn,
         request=request,
+        direction=ctx.direction,
     )
     ctx.metrics.flows.inc(kind if switch is None else FlowType.WEBSOCKET.value)
     tally = _Tally(responder)

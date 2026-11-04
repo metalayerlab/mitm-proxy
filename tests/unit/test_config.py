@@ -36,6 +36,7 @@ NAMES = {
     "proxy.access_log_relayed": "MITM_PROXY_PROXY_ACCESS_LOG_RELAYED",
     "proxy.server_timing": "MITM_PROXY_PROXY_SERVER_TIMING",
     "intercept.hosts": "MITM_PROXY_INTERCEPT_HOSTS",
+    "reverse": "MITM_PROXY_REVERSE",
     "middleware.available": "MITM_PROXY_MIDDLEWARE_AVAILABLE",
     "middleware.chain": "MITM_PROXY_MIDDLEWARE_CHAIN",
     "middleware.config": "MITM_PROXY_MIDDLEWARE_CONFIG",
@@ -346,3 +347,102 @@ def test_an_unreadable_secret_file_names_the_key(
     path = write_config(_AVAILABLE + f"  config:\n    cap: {{token: {{secret_file: {missing}}}}}\n")
     with pytest.raises(ConfigError, match=r"middleware.config.cap.token"):
         load_config(path, environ={})
+
+
+# reverse (design 0012, section 1): a list section with typed `listen` and `upstream` fields.
+
+_REVERSE = (
+    "reverse:\n"
+    "  - listen: 0.0.0.0:8081\n"
+    "    upstream: http://api.internal:8000\n"
+    "  - listen: '[::1]:8082'\n"
+    "    upstream: https://llm-gateway.internal\n"
+)
+
+
+def test_no_reverse_listeners_by_default(tmp_path: Path) -> None:
+    assert load_config(tmp_path / "missing.yaml", environ={}).reverse == ()
+
+
+def test_reverse_listeners_reach_the_config(write_config: Callable[..., Path]) -> None:
+    cfg = load_config(write_config(_REVERSE), environ={})
+    first, second = cfg.reverse
+    assert (first.listen_host, first.listen_port) == ("0.0.0.0", 8081)  # noqa: S104 - a test value
+    assert (first.upstream_host, first.upstream_port, first.upstream_tls) == (
+        "api.internal",
+        8000,
+        False,
+    )
+    assert first.upstream_authority == "api.internal:8000"
+    # IPv6 listen, and an https upstream with no port: the default 443, no port in the authority.
+    assert (second.listen_host, second.listen_port) == ("::1", 8082)
+    assert (second.upstream_host, second.upstream_port, second.upstream_tls) == (
+        "llm-gateway.internal",
+        443,
+        True,
+    )
+    assert second.upstream_authority == "llm-gateway.internal"
+
+
+def test_reverse_from_indexed_variables(tmp_path: Path) -> None:
+    # interpose reads MITM_PROXY_REVERSE_<N>_<FIELD> for a list section with fields.
+    env = {
+        "MITM_PROXY_REVERSE_0_LISTEN": "127.0.0.1:9000",
+        "MITM_PROXY_REVERSE_0_UPSTREAM": "http://origin:7000",
+    }
+    (listener,) = load_config(tmp_path / "missing.yaml", environ=env).reverse
+    assert (listener.listen_host, listener.listen_port) == ("127.0.0.1", 9000)
+    assert listener.upstream_authority == "origin:7000"
+
+
+@pytest.mark.parametrize(
+    ("upstream", "message"),
+    [
+        ("ftp://host", r"reverse\[0\].upstream: must start with http"),
+        ("http://host/path", r"reverse\[0\].upstream: just a host"),
+        ("http://host?q=1", r"reverse\[0\].upstream: just a host"),
+        ("http://user:pw@host", r"reverse\[0\].upstream: no user info"),
+        ("http://", r"reverse\[0\].upstream: no host"),
+        ("http://host:99999", r"reverse\[0\].upstream: .*[Pp]ort"),
+    ],
+)
+def test_reverse_upstream_errors(
+    write_config: Callable[..., Path], upstream: str, message: str
+) -> None:
+    text = f"reverse:\n  - listen: 127.0.0.1:8081\n    upstream: {upstream}\n"
+    with pytest.raises(ConfigError, match=message):
+        load_config(write_config(text), environ={})
+
+
+@pytest.mark.parametrize(
+    ("listen", "message"),
+    [
+        ("127.0.0.1", r"reverse\[0\].listen: expected host:port"),
+        ("host:0", r"reverse\[0\].listen: .*is not a port"),
+        ("host:70000", r"reverse\[0\].listen: .*is not a port"),
+        (":8081", r"reverse\[0\].listen: no host"),
+        ("[::1]", r"reverse\[0\].listen: expected \[ipv6\]:port"),
+    ],
+)
+def test_reverse_listen_errors(
+    write_config: Callable[..., Path], listen: str, message: str
+) -> None:
+    text = f"reverse:\n  - listen: '{listen}'\n    upstream: http://host:1\n"
+    with pytest.raises(ConfigError, match=message):
+        load_config(write_config(text), environ={})
+
+
+def test_reverse_listen_addresses_are_unique(write_config: Callable[..., Path]) -> None:
+    text = (
+        "reverse:\n"
+        "  - listen: 127.0.0.1:8081\n    upstream: http://a:1\n"
+        "  - listen: 127.0.0.1:8081\n    upstream: http://b:2\n"
+    )
+    with pytest.raises(ConfigError, match=r"reverse\[1\].listen: .*already a listen address"):
+        load_config(write_config(text), environ={})
+
+
+def test_reverse_missing_required_field_is_an_error(write_config: Callable[..., Path]) -> None:
+    text = "reverse:\n  - listen: 127.0.0.1:8081\n"  # no upstream
+    with pytest.raises(ConfigError, match=r"reverse\[0\].upstream"):
+        load_config(write_config(text), environ={})

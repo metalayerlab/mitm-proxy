@@ -35,6 +35,7 @@ Generated from the code: don't edit the table, run `uv run scripts/gen-wiki.py`.
 | `proxy.access_log_relayed` | `MITM_PROXY_PROXY_ACCESS_LOG_RELAYED` | `False` | Log one line per flow relayed without interception (`mitm_proxy.relayed`): tunnels to unlisted hosts and plain HTTP to them. Records every destination. |
 | `proxy.server_timing` | `MITM_PROXY_PROXY_SERVER_TIMING` | `False` | Add a `Server-Timing` header (connect, origin, middleware, proxy times) to every intercepted response, for browser devtools. Tells pages they were intercepted. |
 | `intercept.hosts` | `MITM_PROXY_INTERCEPT_HOSTS` | *(empty list)* | The allowlist: hosts to intercept (`example.org`, `*.example.org`, IP literals). Everything else is tunnelled untouched. Empty: intercept nothing. A list: YAML, or comma-separated. |
+| `reverse` | `MITM_PROXY_REVERSE` | *(empty list)* | Reverse-proxy listeners. Each item has `listen` (the `host:port` this proxy binds) and `upstream` (an `http://` or `https://` host, optional port) it forwards to; every request on a listener is intercepted and sent to its upstream. From the config file or `_FILE`, or the indexed variables `MITM_PROXY_REVERSE_<N>_LISTEN` and `_<N>_UPSTREAM`. Empty: no reverse listeners. A list: YAML, or comma-separated. |
 | `middleware.available` | `MITM_PROXY_MIDDLEWARE_AVAILABLE` | *(empty list)* | Installed middleware that may run, as `name=module:attribute`. A list: YAML, or comma-separated. |
 | `middleware.chain` | `MITM_PROXY_MIDDLEWARE_CHAIN` | *(empty list)* | The middleware to run, by name, in order. A list: YAML, or comma-separated. |
 | `middleware.config` | `MITM_PROXY_MIDDLEWARE_CONFIG` | *(none)* | Options for each middleware, by name: `<name>: {...}`, passed to its class's constructor. A `{secret_file: <path>}` leaf is read as a secret. From the config file or `_FILE`, never a plain variable. |
@@ -63,6 +64,26 @@ Only hosts listed in `intercept.hosts` are intercepted; every other tunnel is re
 Matching ignores case and a trailing dot, and international names are compared in their `xn--` form. Ports don't matter: a listed host is intercepted on every port. A lone `*` is refused: intercepting everything is not supported. `mitm-proxy scope check HOST` tells you what would happen to a host.
 
 The TLS name the client asks for (SNI) must be on the list too, or the tunnel is relayed raw: no certificate is ever made for a name nobody listed.
+
+### Reverse-proxy mode
+
+`intercept.hosts` is for the **forward** proxy, where clients are configured to use mitm-proxy. A **reverse** listener is the other way round: mitm-proxy binds an address of its own and sends every request that arrives there to one fixed upstream, so a service's own clients reach it without any proxy configuration. This is how you record a service's inbound traffic.
+
+```yaml
+reverse:
+  - listen: 0.0.0.0:8081
+    upstream: http://api.internal:8000
+  - listen: "[::1]:8082"
+    upstream: https://llm-gateway.internal
+```
+
+- `listen` is the `host:port` this listener binds (`[::1]:8081` for an IPv6 literal); each must be unique. `upstream` is `http://` or `https://`, a host and an optional port, with no path, query or user info.
+- **Every request on a reverse listener is intercepted** and sent to its upstream: `intercept.hosts` does not apply, and there is no proxy authentication (clients of a reverse proxy don't send `Proxy-Authorization`). The listener reaches only its one upstream; its exposure is the bind address, like any service — see [Security](Security). Middleware still selects with `applies_to`, and these flows have `flow.direction == "inbound"` (the forward proxy's are `"egress"`; see [Writing Middleware](Writing-Middleware)).
+- The origin is told the upstream's authority as its `Host`. The client's own `Host` is kept in `X-Forwarded-Host` (only when that header is absent), and the client's address is appended to `X-Forwarded-For`. Nothing else is added: no `Forwarded` and no `X-Forwarded-Proto` (a TLS terminator in front sets that itself).
+- Listeners are bound at startup; one that can't bind stops startup, and `/readyz` is ready only once every listener is bound. A change to `reverse` applies on **restart** — a reload logs a warning and keeps the running listeners.
+- Plain HTTP/1.1 only, for now. TLS and HTTP/2 on a reverse listener are later; until then put a TLS terminator (Caddy, for example) in front and forward plain HTTP.
+
+`reverse` comes from the config file or from `MITM_PROXY_REVERSE_FILE` (a YAML file holding the whole list), or from the indexed variables `MITM_PROXY_REVERSE_<N>_LISTEN` and `MITM_PROXY_REVERSE_<N>_UPSTREAM` (for `N` from 0).
 
 ### Middleware
 
@@ -109,6 +130,8 @@ All times are in milliseconds.
 ### Exposure
 
 Both listeners default to `127.0.0.1`. To let other machines use the proxy, set `proxy.host` (e.g. `0.0.0.0`) **and** `proxy.auth`: without credentials, anyone who can reach the port can use your proxy to reach anything it can (the proxy warns at startup). Containers bind `0.0.0.0` inside, and the published ports decide what's reachable.
+
+A reverse listener (`reverse`) binds the address you give it, and has no authentication: whoever can reach it reaches its one upstream. Its only guard is the bind address, so bind it where only the clients you mean can reach it.
 
 ### The access log
 

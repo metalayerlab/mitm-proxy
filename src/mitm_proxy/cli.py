@@ -93,7 +93,10 @@ def show_config(config: ConfigOption = None) -> None:
         elif isinstance(value, Section):
             shown = _shown(value) if value else ""
         elif isinstance(value, tuple):
-            shown = ", ".join(str(item) for item in value)
+            # A list of scalars, or a list section's items (each a Section, shown as a mapping).
+            shown = ", ".join(
+                _shown(item) if isinstance(item, Section) else str(item) for item in value
+            )
         else:
             shown = str(value)
         typer.echo(f"{setting.key} = {shown}  ({cfg.sources[setting.key]})")

@@ -100,6 +100,7 @@ Every hook except `applies_to` must be an `async def`: a plain `def` hook stops 
 | `flow.id` | Unique per request |
 | `flow.type` | `FlowType.HTTP` (WebSocket flows never reach middleware) |
 | `flow.protocol` | The client's protocol, `"http/1.1"` or `"h2"` (read-only) |
+| `flow.direction` | `"inbound"` on a reverse listener, `"egress"` on the forward proxy (read-only) |
 | `flow.host`, `flow.port`, `flow.method` | Shortcuts into the request |
 | `flow.request` | `method`, `scheme`, `authority`, `path`, `headers`, `body`, `trailers` |
 | `flow.response` | `status`, `reason`, `headers`, `body`, `trailers` (`None` before the origin answers) |
@@ -108,6 +109,8 @@ Every hook except `applies_to` must be an `async def`: a plain `def` hook stops 
 | `flow.metadata` | A dict for your own state between hooks |
 | `flow.timings` | When each stage happened (read-only; see [Timings](#timings)) |
 | `flow.outcome` | How the flow ended (read-only; `None` until it has; see [When a flow ends](#when-a-flow-ends)) |
+
+`flow.direction` tells inbound traffic (a reverse listener, in front of a service) from egress (the forward proxy, a client reaching out); `applies_to` can select on it. Don't confuse it with the `direction` label on the `mitm_proxy_oversize_passthrough_total` metric, which is `request` or `response` — a different thing.
 
 Headers are a case-insensitive multimap with lower-case names (`get`, `get_all`, `set`, `add`, `remove`). Connection-level headers (`Connection`, `Transfer-Encoding`, `Keep-Alive`, `Proxy-*`…) are already removed, and `Host` / `:authority` is `request.authority`, so you never deal with protocol differences. Bodies are de-framed but not decompressed: check `content-encoding` before reading text. Read a whole body with `await flow.request.body.read_all()`, or replace it with `flow.response.body = BufferedBodyStream(b"…")`. You can also change `flow.response.status`, or replace `flow.response` entirely. The framing follows the response you leave: a status that can't have a body (`1xx`, `204`, `304`, or any response to `HEAD`) is sent without one, even if the origin's had one.
 

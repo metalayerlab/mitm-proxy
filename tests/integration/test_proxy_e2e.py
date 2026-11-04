@@ -129,6 +129,57 @@ async def test_an_unverifiable_origin_is_a_502(tmp_path: Path) -> None:
             await proxy.stop()
 
 
+@contextlib.asynccontextmanager
+async def plain_origin() -> AsyncIterator[int]:
+    """A plain-HTTP/1.1 origin on 127.0.0.1 that echoes what it was sent; yields its port."""
+
+    async def recording_handler(incoming: IncomingRequest, responder: Responder) -> None:
+        body = b"authority=%s xfh=%s xff=%s" % (
+            incoming.request.authority.encode(),
+            (incoming.request.headers.get("x-forwarded-host") or "-").encode(),
+            (incoming.request.headers.get("x-forwarded-for") or "-").encode(),
+        )
+        headers = Headers([("content-type", "text/plain"), ("content-length", str(len(body)))])
+        await responder.start(Response(200, headers), headers, end=False)
+        await responder.data(body)
+        await responder.end(None)
+
+    async def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await H1Server(PlainStream(reader, writer), recording_handler, idle_timeout=5).run()
+
+    server = await asyncio.start_server(on_client, "127.0.0.1", 0)
+    try:
+        yield server.sockets[0].getsockname()[1]
+    finally:
+        server.close()
+
+
+async def test_reverse_listener_forwards_to_a_plain_origin(tmp_path: Path) -> None:
+    async with plain_origin() as origin_port:
+        listen_port = free_port()
+        config = proxy_config(
+            tmp_path,
+            None,
+            MITM_PROXY_REVERSE_0_LISTEN=f"127.0.0.1:{listen_port}",
+            MITM_PROXY_REVERSE_0_UPSTREAM=f"http://127.0.0.1:{origin_port}",
+        )
+        proxy = ProxyServer(config)
+        await proxy.start()
+        try:
+            # A plain client talks straight to the reverse listener, no proxy, no CONNECT.
+            reader, writer = await asyncio.open_connection("127.0.0.1", listen_port)
+            client = H1Upstream(PlainStream(reader, writer), read_timeout=5)
+            reply = await send(client, path="/v1/ping", authority="front.example")
+            assert reply.status == 200
+            # The origin saw the upstream's authority and the forwarding headers.
+            assert reply.body == (
+                f"authority=127.0.0.1:{origin_port} xfh=front.example xff=127.0.0.1".encode()
+            )
+            await client.close()
+        finally:
+            await proxy.stop()
+
+
 async def test_service_runs_until_sigterm(tmp_path: Path) -> None:
     from mitm_proxy import service
 

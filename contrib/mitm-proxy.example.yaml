@@ -38,6 +38,16 @@ intercept:
   hosts: []
   # hosts: [example.org, "*.example.org"]
 
+# Reverse-proxy listeners: each binds `listen` (host:port) and sends every request to its
+# `upstream` (http:// or https://, host and optional port, no path). Every request on a
+# listener is intercepted and recorded; the bind address is its only access guard. No reverse
+# listeners by default. A change here applies on restart. (TLS and HTTP/2 on the listener: later.)
+# reverse:
+#   - listen: 0.0.0.0:8081
+#     upstream: http://api.internal:8000
+#   - listen: "[::1]:8082"
+#     upstream: https://llm-gateway.internal
+
 middleware:
   # Installed middleware that may run, as name=module:attribute
   available: []

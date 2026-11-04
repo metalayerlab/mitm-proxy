@@ -18,13 +18,13 @@ import logging
 import ssl
 import time
 import uuid
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
 from mitm_proxy import __version__
 from mitm_proxy.classify import Decision, decide, peek
-from mitm_proxy.config import SETTINGS, Config, Secret, Section
+from mitm_proxy.config import SETTINGS, Config, ReverseListener, Secret, Section
 from mitm_proxy.errors import StartupError, UpstreamError, UpstreamTimeout
 from mitm_proxy.exchange import ExchangeContext, handle
 from mitm_proxy.http.flow import ClientConn
@@ -33,6 +33,7 @@ from mitm_proxy.http.h2 import H2Server
 from mitm_proxy.http.messages import IncomingRequest, Responder
 from mitm_proxy.interception.base import InterceptedConnection
 from mitm_proxy.interception.explicit import ExplicitProxySource
+from mitm_proxy.interception.reverse import ReverseProxySource
 from mitm_proxy.metrics import Metrics
 from mitm_proxy.pipeline import Middleware, Pipeline, load_middleware
 from mitm_proxy.relay import relay
@@ -138,7 +139,23 @@ class ProxyServer:
             idle_timeout=config.idle_timeout_ms / 1000,
             on_auth_failure=self.metrics.proxy_auth_failures.inc,
         )
+        # Reverse listeners are bootstrap (design 0012): built from the startup config, bound in
+        # start(), and a change to `reverse` applies only on restart. Each forwards every request
+        # to its one upstream; the context reads the current snapshot, like the forward proxy's.
+        self.reverse_sources: list[tuple[ReverseListener, ReverseProxySource]] = [
+            (
+                listener,
+                ReverseProxySource(
+                    context=self._reverse_context(listener),
+                    upstream_authority=listener.upstream_authority,
+                    upstream_scheme="https" if listener.upstream_tls else "http",
+                    idle_timeout=config.idle_timeout_ms / 1000,
+                ),
+            )
+            for listener in config.reverse
+        ]
         self._server: asyncio.Server | None = None
+        self._reverse_servers: list[asyncio.Server] = []
         self._connections: set[asyncio.Task[Any]] = set()
 
     def _build(
@@ -159,6 +176,11 @@ class ProxyServer:
 
     def apply(self, config: Config) -> None:
         """Swap in a new configuration; connections already open keep the old one."""
+        if config.reverse != self.snapshot.config.reverse:
+            # Reverse listeners are bound once, at startup (design 0012): a change needs a restart.
+            log.warning(
+                "reverse changed; the reverse listeners keep their configuration until restart"
+            )
         self.snapshot = self._build(config, None)
         # The pool and the connector are shared, not part of the snapshot: give them the new
         # values. They're read when used, so they apply to what happens from now on.
@@ -194,6 +216,26 @@ class ProxyServer:
             config.proxy_port,
             self.ca.fingerprint,
         )
+        for listener, source in self.reverse_sources:
+            try:
+                server = await asyncio.start_server(
+                    self._client_handler(source), listener.listen_host, listener.listen_port
+                )
+            except OSError as e:
+                raise StartupError(
+                    f"cannot listen on {listener.listen_host}:{listener.listen_port} "
+                    f"for the reverse proxy: {e.strerror or e}"
+                ) from e
+            self._reverse_servers.append(server)
+            scheme = "https" if listener.upstream_tls else "http"
+            log.info(
+                "reverse proxy listening on %s:%d -> %s://%s",
+                listener.listen_host,
+                listener.listen_port,
+                scheme,
+                listener.upstream_authority,
+            )
+        # Ready only once every listener, the proxy and the reverse ones, is bound (design 0012).
         self.state = "ready"
 
     @property
@@ -209,13 +251,31 @@ class ProxyServer:
         return int(self._server.sockets[0].getsockname()[1])
 
     async def _on_client(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await self._serve(self.source.handle_client, reader, writer)
+
+    def _client_handler(
+        self, source: ReverseProxySource
+    ) -> Callable[[asyncio.StreamReader, asyncio.StreamWriter], Awaitable[None]]:
+        """A listener callback for a reverse source, sharing the proxy's connection tracking."""
+
+        async def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+            await self._serve(source.handle_client, reader, writer)
+
+        return on_client
+
+    async def _serve(
+        self,
+        handle_client: Callable[[PlainStream, tuple[str, int]], Awaitable[None]],
+        reader: asyncio.StreamReader,
+        writer: asyncio.StreamWriter,
+    ) -> None:
         task = asyncio.current_task()
         if task is not None:
             self._connections.add(task)
         stream = PlainStream(reader, writer, write_timeout=self.client_write_timeout)
         self.metrics.client_connections.add(1)
         try:
-            await self.source.handle_client(stream, stream.peer())
+            await handle_client(stream, stream.peer())
         except Exception:
             log.exception("client connection failed")
         finally:
@@ -226,6 +286,36 @@ class ProxyServer:
                 # Only now: stop() must still be able to cancel a connection that's closing.
                 if task is not None:
                     self._connections.discard(task)
+
+    def _reverse_context(
+        self, listener: ReverseListener
+    ) -> Callable[[tuple[str, int]], ExchangeContext]:
+        """A context factory for one reverse listener: the fixed upstream, the current snapshot."""
+
+        def make(client_addr: tuple[str, int]) -> ExchangeContext:
+            snap = self.snapshot
+            return ExchangeContext(
+                pool=self.pool,
+                metrics=self.metrics,
+                client_conn=ClientConn(client_addr),
+                protocol="http/1.1",
+                max_buffer=snap.config.max_buffer_bytes,
+                idle_timeout=snap.config.idle_timeout_ms / 1000,
+                pipeline=snap.pipeline,
+                target=Target(
+                    listener.upstream_host,
+                    listener.upstream_port,
+                    tls=listener.upstream_tls,
+                    sni=listener.upstream_host,
+                ),
+                scope=None,
+                direction="inbound",
+                server_timing=snap.config.server_timing,
+                access_log=snap.config.access_log,
+                access_log_relayed=snap.config.access_log_relayed,
+            )
+
+        return make
 
     def _plain_context(self, client_addr: tuple[str, int]) -> ExchangeContext:
         snap = self.snapshot
@@ -378,16 +468,17 @@ class ProxyServer:
         self.state = "stopping"
         if grace is None:
             grace = self.snapshot.config.shutdown_grace_ms / 1000
-        if self._server is not None:
-            self._server.close()
+        listeners = [s for s in (self._server, *self._reverse_servers) if s is not None]
+        for server in listeners:
+            server.close()
         if self._connections:
             _, pending = await asyncio.wait(list(self._connections), timeout=grace)
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
-        if self._server is not None:
+        for server in listeners:
             with contextlib.suppress(Exception):
-                await self._server.wait_closed()
+                await server.wait_closed()
         await self.pool.close()
         self.ca.close()
         self.state = "stopped"

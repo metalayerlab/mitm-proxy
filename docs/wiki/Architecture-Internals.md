@@ -37,6 +37,7 @@ flowchart LR
 | `mitm_proxy/server.py` | `ProxyServer`: the configuration snapshot, the listener, tunnel handling, status |
 | `mitm_proxy/interception/base.py` | `InterceptedConnection` and the `InterceptionSource` seam (Phase 2 adds a transparent source) |
 | `mitm_proxy/interception/explicit.py` | The explicit-proxy source: CONNECT and absolute-form requests, proxy authentication |
+| `mitm_proxy/interception/reverse.py` | The reverse-proxy source: a plain HTTP/1.1 listener, every request sent to one fixed upstream (design 0012) |
 | `mitm_proxy/classify.py` | The one intercept-or-relay decision, and peeking the ClientHello |
 | `mitm_proxy/scope.py` | The allowlist: host normalization and `*.suffix` matching |
 | `mitm_proxy/relay.py` | Raw bidirectional relay with half-close and an idle timeout |
@@ -72,6 +73,8 @@ Following `curl --proxy … https://example.org/` with `example.org` listed:
 6. **Upstream.** The pool returns a connection to `(host, port, SNI)`: an HTTP/2 one is shared by concurrent flows, an HTTP/1.1 one is leased to one request at a time. A reused HTTP/1.1 connection that fails before any response byte is retried once on a new connection, for idempotent requests with a replayable body.
 7. **Back.** The response head becomes `flow.response`; `on_response` and the response chunk hooks run; `framing.plan` picks the framing; the responder writes it.
 
+**Reverse listeners** (`reverse`, design 0012) are the other arrival path. `ProxyServer` binds one listener per entry at startup (a bind failure is a `StartupError`, and `/readyz` waits for all of them), and hands each connection to a `ReverseProxySource`. The source runs an `H1Server` with no proxy mode (origin-form requests, no CONNECT, no proxy auth), rewrites each request to the fixed upstream — the authority becomes the upstream's, `X-Forwarded-Host` (if absent) and `X-Forwarded-For` are set — and calls the same `exchange.handle` with an `ExchangeContext` whose `target` is the upstream and whose `direction` is `"inbound"`. So middleware, the access log, Server-Timing, metrics and upstream verification are exactly as above. A change to `reverse` applies on restart; a reload keeps the running listeners.
+
 **Timings:** `Flow.timings` is stamped along the way on the `time.monotonic()` clock: by `exchange.py` at each stage (the request body read, the pool lease, the request sent upstream through a wrapper on the body iterator, the response head, the end), and by interpose's guard around every hook `FlowPipeline` awaits (per middleware, on `time.perf_counter()`; only the differences are used). That's a few clock reads per flow.
 
 **Access log:** `exchange.handle` wraps the client's request body in a byte counter and the client's `Responder` in a `_Recorder` (status sent, body bytes, finished or not). The exchange marks the path it took (origin, local, denied, error), and the `finally` that stamps `complete` writes the line: a synchronous log call, so it's also written when the task is cancelled. An unfinished response is `aborted`. Relayed tunnels are logged from `ProxyServer._relay`, using the counts `relay()` returns.
@@ -91,7 +94,7 @@ Why things are the way they are is recorded in [docs/design/](https://github.com
 From [0001: Initial design](https://github.com/metalayerlab/mitm-proxy/blob/main/docs/design/0001-initial-design.md), unless noted:
 
 - **Allowlist, fail closed:** only listed hosts are intercepted; scope is checked before peeking, and an unlisted SNI is relayed.
-- **The `InterceptionSource` seam:** nothing after it knows how a connection arrived, so transparent interception is one new source.
+- **The `InterceptionSource` seam:** nothing after it knows how a connection arrived, so transparent interception is one new source, and so is the reverse-proxy source (design 0012): it reuses the whole exchange, only fixing the target and the flow direction.
 - **`Flow` per request/stream, protocol-neutral:** both legs negotiate their own protocol; middleware never sees frames.
 - **Chunk-capable hooks from the start, buffered implementation for now.**
 - **Framing from registration, not from what a hook did;** HEAD/1xx/204/304 never framed.

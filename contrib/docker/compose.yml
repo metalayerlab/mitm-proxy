@@ -16,6 +16,8 @@ services:
     ports:
       - "127.0.0.1:8080:8080"   # admin API, loopback only: put a reverse proxy in front
       - "127.0.0.1:3128:3128"   # the proxy; publish beyond loopback only with proxy.auth set
+      # Reverse listener: publish the port you set in MITM_PROXY_REVERSE_0_LISTEN (see below)
+      # - "127.0.0.1:8081:8081"
 
     volumes:
       - ./config:/etc/mitm-proxy:ro
@@ -29,6 +31,9 @@ services:
       MITM_PROXY_PROXY_HOST: 0.0.0.0
       # MITM_PROXY_LOG_LEVEL: DEBUG
       # MITM_PROXY_PROXY_AUTH_FILE: /run/secrets/mitm-proxy/proxy-auth   # user:password
+      # Reverse proxy: record a service's inbound traffic (publish the port above too)
+      # MITM_PROXY_REVERSE_0_LISTEN: 0.0.0.0:8081
+      # MITM_PROXY_REVERSE_0_UPSTREAM: http://api.internal:8000
 
     # Hardening: read-only root, no new privileges, only the capabilities it needs
     read_only: true
