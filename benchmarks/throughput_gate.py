@@ -42,6 +42,7 @@ import shutil
 import statistics
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Sequence
@@ -209,35 +210,48 @@ class Download:
     errors: list[str]
 
 
-def _count(command: list[str], until: float, events: list[tuple[float, int]]) -> str | None:
+def _count(
+    command: list[str], until: float, events: list[tuple[float, int]], scratch: Path
+) -> str | None:
     """Run a command that writes a download to stdout, counting bytes as they arrive, until
-    `until` (monotonic) or its end. Returns its error, if it failed."""
-    process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-    if process.stdout is None:  # pragma: no cover - stdout=PIPE always gives one
-        raise RuntimeError("no stdout")
-    fd = process.stdout.fileno()
-    timer = threading.Timer(max(0.0, until - time.monotonic()), process.kill)
-    timer.start()
-    try:
-        while data := os.read(fd, READ_SIZE):
-            events.append((time.monotonic(), len(data)))
-    finally:
-        timer.cancel()
-        process.wait()
-    if process.returncode not in (0, -9) and time.monotonic() < until:
-        stderr = process.stderr.read().decode(errors="replace") if process.stderr else ""
-        return f"{command[0]} exited {process.returncode}: {stderr.strip()[:200]}"
+    `until` (monotonic) or its end. Returns its error, if it failed.
+
+    Its stderr goes to an unnamed temporary file in `scratch`, never a pipe: a pipe nobody reads
+    until the end fills up when a tool is chatty (yt-dlp's progress), and the tool then stalls,
+    which would read as a slow download. The file is gone once it is closed.
+    """
+    with tempfile.TemporaryFile(dir=scratch) as stderr:
+        process = subprocess.Popen(command, stdout=subprocess.PIPE, stderr=stderr)
+        if process.stdout is None:  # pragma: no cover - stdout=PIPE always gives one
+            raise RuntimeError("no stdout")
+        fd = process.stdout.fileno()
+        timer = threading.Timer(max(0.0, until - time.monotonic()), process.kill)
+        timer.start()
+        try:
+            while data := os.read(fd, READ_SIZE):
+                events.append((time.monotonic(), len(data)))
+        finally:
+            timer.cancel()
+            process.wait()
+            process.stdout.close()
+        if process.returncode not in (0, -9) and time.monotonic() < until:
+            stderr.seek(0)
+            text = stderr.read().decode(errors="replace").strip()
+            return f"{command[0]} exited {process.returncode}: {text[-200:]}"
     return None
 
 
-def download(command: list[str], seconds: int, warmup: int) -> tuple[list[float], list[str]]:
-    """Per-second Mbit/s of a download repeated until `seconds` have passed."""
+def download(
+    command: list[str], seconds: int, warmup: int, scratch: Path
+) -> tuple[list[float], list[str]]:
+    """Per-second Mbit/s of a download repeated until `seconds` have passed. A failing tool's
+    stderr is kept in a temporary file in `scratch` while it runs (see _count)."""
     events: list[tuple[float, int]] = []
     errors: list[str] = []
     start = time.monotonic()
     until = start + seconds
     while time.monotonic() < until:
-        error = _count(command, until, events)
+        error = _count(command, until, events, scratch)
         if error is not None:
             errors.append(error)
             break  # a path that fails counts as zero for the rest of the time
@@ -351,6 +365,9 @@ def _say(text: str) -> None:
 
 def run(args: argparse.Namespace) -> int:
     paths = {PROXY: args.proxy, BASELINE: args.exit_url}
+    # The tools' stderr goes to temporary files here while they run (see _count).
+    scratch = args.out / "tmp"
+    scratch.mkdir(parents=True, exist_ok=True)
     downloads: list[Download] = []
     cpu = CpuMeter(args.proxy_pid)
     for number in range(1, args.rounds + 1):
@@ -361,7 +378,7 @@ def run(args: argparse.Namespace) -> int:
             command = curl_download(args.curl, paths[path], args.download_url)
             if path == PROXY:
                 cpu.start()
-            mbit, errors = download(command, args.duration, args.warmup)
+            mbit, errors = download(command, args.duration, args.warmup, scratch)
             if path == PROXY:
                 cpu.stop()
             downloads.append(Download(path, number, 0, mbit, errors))
@@ -371,7 +388,10 @@ def run(args: argparse.Namespace) -> int:
 
     def stream(index: int) -> None:
         parallel[index] = download(
-            curl_download(args.curl, args.proxy, args.download_url), args.duration, args.warmup
+            curl_download(args.curl, args.proxy, args.download_url),
+            args.duration,
+            args.warmup,
+            scratch,
         )
 
     threads = [threading.Thread(target=stream, args=(i,)) for i in range(2)]
@@ -395,7 +415,7 @@ def run(args: argparse.Namespace) -> int:
                 args.yt_dlp, "--quiet", "--proxy", paths[path],
                 "-f", args.video_format, "-o", "-", args.video_url,
             ]  # fmt: skip
-            mbit, errors = download(command, args.duration, args.warmup)
+            mbit, errors = download(command, args.duration, args.warmup, scratch)
             video[path] = {
                 "median_mbit": statistics.median(mbit) if mbit else None,
                 "errors": errors,

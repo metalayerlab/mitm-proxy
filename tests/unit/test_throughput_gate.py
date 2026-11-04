@@ -119,3 +119,28 @@ def test_every_endpoint_is_an_argument_and_only_the_probe_has_a_default(tmp_path
     assert args.video_url is None
     with pytest.raises(SystemExit):
         gate.parse_args(["--proxy", "http://127.0.0.1:3128", "--out", str(tmp_path)])
+
+
+def test_a_chatty_tool_never_stalls_on_its_stderr(tmp_path: Path) -> None:
+    # 1 MiB on stderr before any stdout: far more than a pipe holds. Read only at the end, a
+    # piped stderr would block the tool until the deadline, and its download would read as zero.
+    script = (
+        "import sys; sys.stderr.write('x' * (1 << 20) + 'the real error'); sys.stderr.flush(); "
+        "sys.stdout.write('y' * 1000); sys.stdout.flush(); sys.exit(3)"
+    )
+    events: list[tuple[float, int]] = []
+    started = gate.time.monotonic()
+    error = gate._count([sys.executable, "-c", script], started + 20, events, tmp_path)
+    assert gate.time.monotonic() - started < 10
+    assert sum(size for _, size in events) == 1000
+    assert error is not None and error.endswith("the real error")
+    assert " exited 3: " in error
+    assert list(tmp_path.iterdir()) == []  # the temporary file is gone
+
+
+def test_a_clean_download_has_no_error(tmp_path: Path) -> None:
+    events: list[tuple[float, int]] = []
+    command = [sys.executable, "-c", "print('z' * 99)"]
+    until = gate.time.monotonic() + 20
+    assert gate._count(command, until, events, tmp_path) is None
+    assert sum(size for _, size in events) == 100
