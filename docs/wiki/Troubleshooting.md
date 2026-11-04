@@ -35,6 +35,18 @@ A middleware that rewrites bodies applies to the flow, so the request body is se
 
 The middleware raised, ran past `middleware.hook_timeout_ms` (or its own `timeout`), or returned the wrong type (the log names the type, never the value). The flow carried on without it, unless the middleware sets `on_error = "fail"`: then the flow ended with `502 middleware x failed` (outcome `denied:x`), as a gate should. Fix the middleware; the traceback is in the log. The timeout is per hook call (each chunk-hook call too), not per flow, and it cancels the hook at its current `await`. A middleware that *blocks* the event loop (sync I/O, `time.sleep`, heavy CPU) can't be timed out and stalls everything: move that work to `asyncio.to_thread` (the thread keeps running after a timeout). A timeout line that ends `late: overran` means the hook ran synchronous code past its deadline; `late: swallowed` means it caught the cancellation and returned anyway. Either way its result was discarded and it's treated as a timeout.
 
+### `middleware 'x' returned 'bytes' from on_response_chunk, but it is observe-only` in the log
+
+The middleware sets `observe_only = True` but its chunk hook returned bytes, as if to change the body. Observe-only hooks must return `None`; the traffic carried on untouched and the middleware was skipped for the rest of that flow. Return `None`, or drop `observe_only` if it really rewrites bodies (its flows then buffer). See [Writing Middleware](Writing-Middleware#observe-only-middleware-and-streaming).
+
+### `observe_only can't be combined with on_error = 'fail'` at startup
+
+A middleware sets both. On a streaming flow its chunk hooks run after the response head has gone, so a failure can't become a `502`. Keep `on_error` at its default for an observe-only middleware; a gate that must fail closed should not be observe-only.
+
+### A middleware gets `RuntimeError: a streamed body is not buffered`
+
+It called `read_all()` on a flow where every middleware is observe-only, so nothing holds the body. Read the body from `on_request_chunk` / `on_response_chunk` instead, or, if it must have the whole body in one piece, don't mark it observe-only (its flows then buffer).
+
 ### `middleware 'x': on_request must be an async function` at startup
 
 One of the middleware's hooks is a plain `def`. Every hook except `applies_to` must be `async def` (design 0011). The proxy refuses to start; a new configuration with it is refused and the running one stays.
@@ -49,14 +61,14 @@ Turn on the access log (`proxy.access_log: true`) and read the end of each flow 
 
 - **`ttfb`** is the origin: from the request being sent to its response headers. If it's most of `total`, the origin is slow, not the proxy.
 - **`connect`** is waiting for an upstream connection. Without `(reused)`, it's a new TCP and TLS connection, and high values point at DNS or the network to the origin. With `(reused)` it's normally about 0; a high value means the request queued for a free connection because the host had `upstream.max_connections_per_host` busy ones.
-- **`mw`** is time spent in middleware hooks. To find which one, read `flow.timings.middleware` (see [Writing Middleware](Writing-Middleware)).
+- **`mw`** is time spent in middleware hooks. To find which one, read `flow.timings.middleware` (see [Writing Middleware](Writing-Middleware)). On a flow that streams past observe-only middleware (such as `capture` alone), the chunk hooks run while the body moves, so their time is also inside the remainder below.
 - **The rest** of `total` is the proxy's own work plus moving the bodies: receiving the response from the origin and sending it to the client. A large remainder on a big response is the download, not the proxy.
 
 `-` means that stage didn't happen (for example, `connect=-` on a response a middleware sent itself, `outcome=local:<name>`).
 
 For the trend rather than one request, the same stages are histograms on `/metrics`: `mitm_proxy_origin_ttfb_seconds` going up means the origin got slower; `mitm_proxy_upstream_connect_seconds{reused="false"}` going up points at the network or the origin's TLS; `mitm_proxy_middleware_duration_seconds` by `middleware` finds a slow one. Example queries are in [HTTP API Reference](HTTP-API-Reference), under `GET /metrics`.
 
-In a browser, set `proxy.server_timing: true` and open devtools (Network → a request → Timing): the same breakdown appears under Server Timing as `mitm-connect`, `mitm-origin`, `mitm-mw` and `mitm-proxy`, and `mitm-local` names the middleware that answered a request itself. These show up even for responses no middleware ran on. See [In-Depth Configuration](In-Depth-Configuration).
+In a browser, set `proxy.server_timing: true` and open devtools (Network → a request → Timing): the same breakdown appears under Server Timing as `mitm-connect`, `mitm-origin`, `mitm-mw` and `mitm-proxy`, and `mitm-local` names the middleware that answered a request itself. These show up even for responses no middleware ran on. On a streamed flow (every middleware observe-only) they're written with the head, before the body: `mitm-proxy` is the time to the head, not the whole response, and `mitm-mw` leaves out the response's chunk hooks. See [In-Depth Configuration](In-Depth-Configuration).
 
 ### `504 the origin did not answer in time` from a slow origin
 
@@ -68,7 +80,7 @@ The flow ended before the whole response was sent. Usually the client gave up: a
 
 ### `… body is over body.max_buffer_bytes …; streaming it through without middleware`
 
-That body was bigger than `body.max_buffer_bytes`, so middleware didn't see it. Raise the limit if you need to inspect such bodies (they're held in memory).
+That body was bigger than `body.max_buffer_bytes`, so middleware didn't see it. Raise the limit if you need to inspect such bodies (they're held in memory). Only buffered flows have the limit: if every middleware on the flow only reads bodies, mark them `observe_only` and the flow streams with no limit ([Writing Middleware](Writing-Middleware#observe-only-middleware-and-streaming)).
 
 ### `capture: dir … can't be created or written` / `a record for rule … can't be written`
 
@@ -76,7 +88,7 @@ The capture middleware can't write to its `dir`. The first line is at startup: t
 
 ### Capture recorded a value it should have redacted
 
-`json_paths` apply only to bodies declared `application/json` or `*+json` that parse as JSON, and not yet to server-sent events; other bodies are stored as they are, silently. Headers are redacted only by name: a list you give replaces the default five. Add the header name, or narrow the rule (`path`, `methods`) to the JSON traffic, and test with a fake credential (see [Writing Middleware](Writing-Middleware#the-built-in-capture-middleware)).
+`json_paths` apply only to bodies declared `application/json` or `*+json` that parse as JSON, and to the `data:` lines of a `text/event-stream` body whose value parses as JSON; other bodies and lines are stored as they are, silently. Headers are redacted only by name: a list you give replaces the default five. Add the header name, or narrow the rule (`path`, `methods`) to the JSON traffic, and test with a fake credential (see [Writing Middleware](Writing-Middleware#the-built-in-capture-middleware)).
 
 ### `the proxy listens on 0.0.0.0 without proxy.auth`
 

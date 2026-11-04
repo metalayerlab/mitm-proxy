@@ -76,6 +76,41 @@ class PassthroughBody:
         return self._done
 
 
+class StreamingBody:
+    """A body streamed past observe-only middleware (design 0012): forwarded as it arrives,
+    each chunk shown to their chunk hooks after it has gone onward.
+
+    Like a passthrough body it can be iterated once and is never buffered, so ``read_all``
+    refuses: a middleware that wants the body reads it from its chunk hooks.
+    """
+
+    def __init__(self, source: AsyncIterator[bytes]) -> None:
+        self._source = source
+        self._used = False
+        self._done = False
+
+    async def _chunks(self) -> AsyncIterator[bytes]:
+        async for chunk in self._source:
+            if chunk:
+                yield chunk
+        self._done = True
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        if self._used:
+            raise RuntimeError("a streamed body can only be iterated once")
+        self._used = True
+        return self._chunks()
+
+    async def read_all(self) -> bytes:
+        raise RuntimeError(
+            "a streamed body is not buffered: every middleware on this flow is observe-only, "
+            "so read the body from on_request_chunk / on_response_chunk"
+        )
+
+    def is_complete(self) -> bool:
+        return self._done
+
+
 async def empty() -> AsyncIterator[bytes]:
     """An async iterator with no chunks."""
     return

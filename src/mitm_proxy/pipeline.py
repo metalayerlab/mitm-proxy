@@ -15,6 +15,12 @@ a 502 naming it when it fails (``HookFailed``; see ``FlowPipeline``; design 0011
 Every hook must be an ``async def``: a sync one is refused when the middleware is
 registered, at startup and on reload (0011). (A hook that blocks the event loop
 can't be timed out; that is the one thing middleware must not do.)
+
+A middleware with ``observe_only = True`` declares that its chunk hooks never change a body
+(design 0012, section 4). A flow on which every applying middleware is observe-only streams:
+nothing is buffered, each chunk is written onward and then shown to the chunk hooks, and
+``read_all()`` raises. On a flow that buffers (any applying middleware isn't observe-only),
+the observe-only middleware see the body as sent, after the other middleware's chunk hooks.
 """
 
 from __future__ import annotations
@@ -64,18 +70,22 @@ class Action(enum.Enum):
 class Middleware:
     """Base class. Override what you need; the defaults do nothing.
 
-    Overriding a chunk hook makes the middleware *mutation-capable*: flows it
-    applies to are sent with length-independent framing.
+    Overriding a chunk hook makes the middleware *mutation-capable*, unless it is
+    observe-only: flows it applies to are sent with length-independent framing.
 
     Two class attributes set this middleware's own failure policy (interpose reads them):
     ``on_error`` (``"skip"``, the default: fail open; ``"fail"``: a failure denies the flow)
     and ``timeout`` (seconds per hook call instead of ``middleware.hook_timeout_ms``;
-    ``NO_LIMIT`` for none). Don't use either name for anything else. The middleware's name is
+    ``NO_LIMIT`` for none). A third, ``observe_only`` (default False), declares that the chunk
+    hooks only observe: they return None, and flows on which every applying middleware is
+    observe-only stream unbuffered (design 0012). It can't be combined with ``on_error =
+    "fail"``. Don't use any of the three names for anything else. The middleware's name is
     always its key in ``middleware.available``.
     """
 
     on_error: ClassVar[OnError | None] = None
     timeout: ClassVar[float | None] = None
+    observe_only: ClassVar[bool] = False
 
     def applies_to(self, flow: Flow) -> bool:
         """Called once, when the request headers arrive. False: no hooks run for this flow."""
@@ -101,6 +111,9 @@ class Middleware:
 
 
 def is_mutation_capable(middleware: Middleware) -> bool:
+    """It overrides a chunk hook and isn't observe-only (0001, as 0012 narrows it)."""
+    if middleware.observe_only is True:
+        return False
     cls = type(middleware)
     return (
         cls.on_request_chunk is not Middleware.on_request_chunk
@@ -129,6 +142,7 @@ class Entry:
     middleware: Middleware
     mutation_capable: bool
     core: core.Entry[Middleware]  # the name and the middleware's own on_error and timeout
+    observe_only: bool = False  # its chunk hooks only observe (design 0012)
 
 
 @dataclass(frozen=True)
@@ -142,13 +156,24 @@ class Outcome:
 def _core_entry(name: str, middleware: Middleware) -> core.Entry[Middleware]:
     """interpose's entry: the registry name, and the middleware's on_error and timeout.
 
-    Raises ValueError for a wrong on_error or timeout, TypeError for a sync hook (0011).
+    Raises ValueError for a wrong on_error, timeout or observe_only, TypeError for a sync hook
+    (0011).
     """
     require_async(middleware, ASYNC_HOOKS, name=name)
     try:
-        return core.Entry.of(middleware, name=name)
+        entry = core.Entry.of(middleware, name=name)
     except ValueError as e:
         raise ValueError(f"{e} (its on_error or timeout attribute)") from e
+    observe_only = getattr(middleware, "observe_only", False)
+    if not isinstance(observe_only, bool):
+        raise ValueError(f"middleware {name!r}: observe_only must be True or False")
+    if observe_only and entry.on_error == "fail":
+        # Once a streamed head has gone, a failure can't become a 502 (design 0012).
+        raise ValueError(
+            f"middleware {name!r}: observe_only can't be combined with on_error = 'fail': "
+            "a streamed response's head has gone before its chunk hooks run"
+        )
+    return entry
 
 
 class Pipeline:
@@ -171,8 +196,20 @@ class Pipeline:
             raise ValueError(f"middleware {name!r} is registered twice")
         if not isinstance(middleware, Middleware):
             raise TypeError(f"middleware {name!r} is not a Middleware")
+        try:
+            core_entry = _core_entry(name, middleware)
+        except ValueError as e:
+            if middleware.observe_only is True:
+                # The one registration error that is about this middleware's design, not a
+                # typo: a StartupError wherever it is registered (design 0012).
+                raise StartupError(str(e)) from e
+            raise
         entry = Entry(
-            name, middleware, is_mutation_capable(middleware), _core_entry(name, middleware)
+            name,
+            middleware,
+            is_mutation_capable(middleware),
+            core_entry,
+            middleware.observe_only is True,
         )
         self._entries.append(entry)
         # interpose's pipeline is frozen: build it again (registration happens at startup only).
@@ -229,6 +266,10 @@ class FlowPipeline:
             self._run = pipeline._core.start(select=lambda _: False, on_failure=self._failed)
         self._core_entries = pipeline._core.entries
         self.entries: list[Entry] = [by_core[e] for e in self._run.entries]
+        # The chunk hooks' two groups, in chain order: the ones that may change a body run
+        # first (a fold), then the observe-only ones see the result (design 0012).
+        self._mutating = [e.core for e in self.entries if not e.observe_only]
+        self._observing = [e.core for e in self.entries if e.observe_only]
 
     def _failed(self, failure: core.Failure) -> None:
         """Log one failure with the flow ID, and count it."""
@@ -250,6 +291,15 @@ class FlowPipeline:
                 name,
                 hook,
                 failure.timeout,
+                flow_id,
+            )
+        elif isinstance(failure.error, _NotObserving):
+            log.error(
+                "middleware %r returned %r from %s, but it is observe-only: it must return "
+                "None; skipped for the rest of the flow (flow %s)",
+                name,
+                failure.error.type_name,
+                hook,
                 flow_id,
             )
         elif isinstance(failure.error, _WrongType):
@@ -276,6 +326,11 @@ class FlowPipeline:
     @property
     def mutation_capable(self) -> bool:
         return any(e.mutation_capable for e in self.entries)
+
+    @property
+    def streams(self) -> bool:
+        """Every middleware that applies is observe-only: neither body is buffered (0012)."""
+        return self.denied_by is None and bool(self.entries) and not self._mutating
 
     @property
     def failed(self) -> set[str]:
@@ -312,7 +367,22 @@ class FlowPipeline:
                 raise _WrongType(hook, result)
             return bytes(result)  # every middleware gets bytes from the one before
 
-        return await self._run.fold(hook, chunk, invoke, keep_none=True)
+        data = await self._run.fold(hook, chunk, invoke, entries=self._mutating, keep_none=True)
+        await self._observe(hook, data, is_last)
+        return data
+
+    async def _observe(self, hook: str, chunk: bytes, is_last: bool) -> None:
+        """The observe-only middleware's chunk hook, in chain order. Never raises HookFailed:
+        observe-only can't be fail-closed, so a failure (bytes returned, too) skips it."""
+        if not self._observing:
+            return
+
+        async def invoke(mw: Middleware) -> None:
+            result = await getattr(mw, hook)(self.flow, chunk, is_last)
+            if result is not None:
+                raise _NotObserving(hook, result)  # the stream carries on untouched
+
+        await self._run.each(hook, invoke, entries=self._observing)
 
     async def run_request(self) -> Outcome:
         if self.denied_by is not None:
@@ -339,6 +409,14 @@ class FlowPipeline:
             return chunk
         return await self._chunk("on_response_chunk", chunk, is_last)
 
+    async def observe_request_chunk(self, chunk: bytes, is_last: bool) -> None:
+        """A streaming flow's request chunk, already sent upstream, shown to the observers."""
+        await self._observe("on_request_chunk", chunk, is_last)
+
+    async def observe_response_chunk(self, chunk: bytes, is_last: bool) -> None:
+        """A streaming flow's response chunk, already sent to the client, shown likewise."""
+        await self._observe("on_response_chunk", chunk, is_last)
+
     async def run_done(self) -> None:
         """on_done for every middleware that applied and hasn't failed, in order.
 
@@ -354,6 +432,10 @@ class _WrongType(InvalidResult):
     def __init__(self, hook: str, result: object) -> None:
         self.type_name = type(result).__name__
         super().__init__(f"{hook} returned {self.type_name}")
+
+
+class _NotObserving(_WrongType):
+    """An observe-only chunk hook returned something other than None (design 0012)."""
 
 
 _EXPECTED = {

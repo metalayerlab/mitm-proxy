@@ -1,4 +1,7 @@
-"""The built-in capture middleware (design 0012, section 3; step (c), buffered)."""
+"""The built-in capture middleware (design 0012, section 3; steps (c) and (e)).
+
+Capture is observe-only, so a flow it is alone on streams; ``run_one(buffered=True)`` adds a
+mutation-capable middleware that makes the flow buffer, which is how step (c) recorded."""
 
 from __future__ import annotations
 
@@ -30,7 +33,9 @@ from mitm_proxy.middleware.capture import (
     DEFAULT_REDACT_HEADERS,
     Capture,
     JsonPath,
+    _Collected,
     _decompress,
+    _Events,
 )
 from mitm_proxy.pipeline import Action, Middleware, load_middleware
 from mitm_proxy.server import ProxyServer
@@ -66,6 +71,17 @@ class Counted:
             await asyncio.sleep(0.001)
 
 
+class Rewrites(Middleware):
+    """Mutation-capable (it overrides the chunk hooks) though it changes nothing: the flow
+    buffers, as every flow capture recorded did before observe-only streaming."""
+
+    async def on_request_chunk(self, flow: Flow, chunk: bytes, is_last: bool) -> bytes | None:
+        return None
+
+    async def on_response_chunk(self, flow: Flow, chunk: bytes, is_last: bool) -> bytes | None:
+        return None
+
+
 async def run_one(
     capture: Capture,
     origin: Origin | None = None,
@@ -73,12 +89,16 @@ async def run_one(
     protocol: str = "http/1.1",
     before: list[tuple[str, Middleware]] | None = None,
     max_buffer: int = 1 << 20,
+    buffered: bool = False,
     **send_args: Any,
 ) -> int:
-    """One flow through the in-memory bench with capture in the chain; the client's status."""
+    """One flow through the in-memory bench with capture in the chain; the client's status.
+
+    buffered: add a mutation-capable middleware, so the flow buffers instead of streaming."""
     b = bench(origin)
     counted = Counted(capture)
-    ctx = b.context(protocol, [*(before or []), ("capture", capture)], max_buffer=max_buffer)
+    chain = [*(before or []), *([("rewrites", Rewrites())] if buffered else [])]
+    ctx = b.context(protocol, [*chain, ("capture", capture)], max_buffer=max_buffer)
     client = await client_for(b.proxy(ctx), protocol)
     reply = await send(client, **send_args)
     await counted.wait()
@@ -278,11 +298,18 @@ async def test_a_flow_no_rule_matches_keeps_the_fast_path(tmp_path: Path) -> Non
 # 4. The record.
 
 
-async def test_a_record_has_record_0012s_keys(tmp_path: Path) -> None:
+@pytest.mark.parametrize("buffered", [False, True])
+async def test_a_record_has_record_0012s_keys(tmp_path: Path, buffered: bool) -> None:
     capture = Capture(options(tmp_path))
     origin = Origin(headers=[("content-type", "text/plain"), ("x-a", "1"), ("x-a", "2")])
     status = await run_one(
-        capture, origin, method="POST", path="/v1/answer", body=b"question", headers=[("x-q", "1")]
+        capture,
+        origin,
+        method="POST",
+        path="/v1/answer",
+        body=b"question",
+        headers=[("x-q", "1")],
+        buffered=buffered,
     )
     assert status == 200
     (record,) = records(tmp_path / "cap")
@@ -298,7 +325,8 @@ async def test_a_record_has_record_0012s_keys(tmp_path: Path) -> None:
     ]
     assert record["rule"] == "all" and record["direction"] == "egress"
     assert len(record["flow"]) == 32 and record["outcome"] == "origin"
-    assert record["streamed"] is False
+    # Streamed when capture is alone on the flow; a buffered flow's response wasn't.
+    assert record["streamed"] is not buffered
     request = record["request"]
     assert request["method"] == "POST"
     assert request["url"] == "https://example.org/v1/answer"
@@ -413,11 +441,21 @@ async def test_a_cut_in_the_middle_of_a_character_keeps_the_text(tmp_path: Path)
 
 async def test_an_oversize_body_is_omitted(tmp_path: Path) -> None:
     capture = Capture(options(tmp_path))
-    await run_one(capture, method="POST", body=b"x" * 100, max_buffer=10)
+    await run_one(capture, method="POST", body=b"x" * 100, max_buffer=10, buffered=True)
     record = records(tmp_path / "cap")[0]
     assert record["request"]["body"] is None and record["request"]["omitted"] == "oversize"
     # The response skips the hooks too once the request has (0001).
     assert record["response"]["body"] is None and record["response"]["omitted"] == "oversize"
+    assert record["streamed"] is False
+
+
+async def test_a_streamed_body_is_recorded_whatever_the_buffer_limit(tmp_path: Path) -> None:
+    # body.max_buffer_bytes applies only to buffered flows (design 0012).
+    capture = Capture(options(tmp_path))
+    await run_one(capture, Origin(echo=True), method="POST", body=b"x" * 100, max_buffer=10)
+    record = records(tmp_path / "cap")[0]
+    assert record["request"]["body"] == "x" * 100
+    assert record["response"]["body"] == "x" * 100 and record["streamed"] is True
 
 
 async def test_a_denied_flow_is_recorded_without_a_response(tmp_path: Path) -> None:
@@ -537,15 +575,54 @@ async def test_json_paths_skip_non_json_and_unparsable_bodies(tmp_path: Path) ->
     assert broken["request"]["body"] == "{not json"
 
 
-async def test_an_event_stream_is_stored_with_json_paths_skipped(tmp_path: Path) -> None:
-    events = f'data: {{"api_key": "{FAKE_KEY}"}}\n\ndata: [DONE]\n\n'.encode()
-    origin = Origin(headers=[("content-type", "text/event-stream")], body=events)
-    capture = Capture(options(tmp_path, redact={"json_paths": ["$.api_key"]}))
-    await run_one(capture, origin)
+EVENTS = (
+    f'data: {{"api_key": "{FAKE_KEY}", "n": 1}}\n\n'
+    ": a comment line, kept\r\n"
+    f'event: delta\r\ndata:{{"choices": [{{"api_key": "{FAKE_KEY}"}}]}}\r\n\r\n'
+    f"data: not json {FAKE_KEY}\rid: 7\r\r"
+    'data: {"n": 2}\n\n'
+    "data: [DONE]\n\n"
+)
+EVENTS_REDACTED = (
+    'data: {"api_key":"[REDACTED]","n":1}\n\n'
+    ": a comment line, kept\r\n"
+    'event: delta\r\ndata:{"choices":[{"api_key":"[REDACTED]"}]}\r\n\r\n'
+    f"data: not json {FAKE_KEY}\rid: 7\r\r"
+    'data: {"n": 2}\n\n'
+    "data: [DONE]\n\n"
+)
+
+
+@pytest.mark.parametrize("buffered", [False, True])
+async def test_json_paths_apply_to_an_event_streams_json_data_lines(
+    tmp_path: Path, buffered: bool
+) -> None:
+    origin = Origin(
+        headers=[("content-type", "text/event-stream; charset=utf-8")],
+        body=EVENTS.encode(),
+        trickle=0.001,  # ten chunks, so lines (and a CRLF) are split across them
+    )
+    capture = Capture(options(tmp_path, redact={"json_paths": ["$.api_key", "$..api_key"]}))
+    await run_one(capture, origin, buffered=buffered)
     record = records(tmp_path / "cap")[0]
-    # Step (e) applies json_paths to data: lines; until then the stream is stored as it is.
-    assert record["response"]["body"] == events.decode()
-    assert record["streamed"] is False
+    # A data: line whose value is JSON is redacted (the one optional space kept); every other
+    # line, a data: line that isn't JSON among them, and a JSON line nothing matched in, is
+    # kept byte for byte.
+    assert record["response"]["body"] == EVENTS_REDACTED
+    assert record["streamed"] is not buffered
+
+
+@pytest.mark.parametrize("split", range(1, 40))
+def test_event_stream_redaction_is_the_same_however_the_chunks_fall(
+    tmp_path: Path, split: int
+) -> None:
+    capture = Capture(options(tmp_path, redact={"json_paths": ["$..api_key"]}))
+    data = EVENTS.encode()
+    whole = _Events(capture).feed(data, final=True)
+    events = _Events(capture)
+    pieces = [data[i : i + split] for i in range(0, len(data), split)]
+    out = b"".join(events.feed(piece, final=False) for piece in pieces)
+    assert out + events.feed(b"", final=True) == whole == EVENTS_REDACTED.encode()
 
 
 async def test_query_params_are_redacted_and_their_names_kept(tmp_path: Path) -> None:
@@ -780,7 +857,8 @@ middleware:
     assert FAKE_KEY not in text  # nothing written before redaction
     (record,) = [json.loads(line) for line in text.splitlines()]
     assert record["rule"] == "inbound-api" and record["direction"] == "inbound"
-    assert record["outcome"] == "origin" and record["streamed"] is False
+    # capture is alone on the flow, so it streamed (design 0012, step e).
+    assert record["outcome"] == "origin" and record["streamed"] is True
     request = record["request"]
     assert request["url"] == (
         f"http://127.0.0.1:{origin_port}/v1/answer?api_key=[REDACTED]&lang=en"
@@ -805,3 +883,311 @@ async def test_a_record_of_a_body_that_decodes_too_large_omits_it(
     await run_one(Capture(options(tmp_path)), origin)
     response = records(tmp_path / "cap")[0]["response"]
     assert response["body"] is None and response["omitted"] == "oversize"
+
+
+# 6. Observe-only streaming (step e): what a streamed flow records, and what it holds.
+
+
+def _scenarios() -> list[tuple[str, dict[str, Any], dict[str, Any], dict[str, Any]]]:
+    """(id, capture options, Origin arguments, send arguments): one per kind of body."""
+    json_headers = [("content-type", "application/json")]
+    secret = json.dumps({"api_key": FAKE_KEY, "q": "x" * 50}).encode()
+    gzip_json = [*json_headers, ("content-encoding", "gzip")]
+    return [
+        ("text", {}, {}, {}),
+        ("binary", {}, {"headers": [("content-type", "x/y")], "body": bytes(range(256))}, {}),
+        (
+            "gzip-json",
+            {"redact": {"json_paths": ["$.api_key"]}},
+            {"headers": gzip_json, "body": gzip.compress(secret)},
+            {},
+        ),
+        ("br", {}, {"headers": [("content-type", "text/plain"), ("content-encoding", "br")]}, {}),
+        (
+            "broken-gzip",
+            {},
+            {"headers": [("content-type", "text/plain"), ("content-encoding", "gzip")]},
+            {},
+        ),
+        (
+            "json-cut-after-redaction",
+            {"max_body_bytes": 20, "redact": {"json_paths": ["$.api_key"]}},
+            {"echo": True, "headers": json_headers},
+            {"method": "POST", "body": secret, "headers": json_headers},
+        ),
+        ("utf8-cut", {"max_body_bytes": 4}, {"body": "abé!".encode()}, {}),
+        ("long-text-cut", {"max_body_bytes": 7}, {"body": b"0123456789" * 9}, {}),
+        (
+            "unparsable-json",
+            {"redact": {"json_paths": ["$.api_key"]}},
+            {"headers": json_headers, "body": b'{"api_key": "' + FAKE_KEY.encode()},
+            {},
+        ),
+        (
+            "events",
+            {"max_body_bytes": 64, "redact": {"json_paths": ["$..api_key"]}},
+            {"headers": [("content-type", "text/event-stream")], "body": EVENTS.encode()},
+            {},
+        ),
+        ("head", {}, {}, {"method": "HEAD"}),
+        ("no-content", {}, {"status": 204, "body": b""}, {}),
+    ]
+
+
+@pytest.mark.parametrize("protocol", ["http/1.1", "h2"])
+@pytest.mark.parametrize(
+    ("options_", "origin_args", "send_args"),
+    [pytest.param(*rest, id=name) for name, *rest in _scenarios()],
+)
+async def test_a_streamed_flow_records_what_a_buffered_one_does(
+    tmp_path: Path,
+    protocol: str,
+    options_: dict[str, Any],
+    origin_args: dict[str, Any],
+    send_args: dict[str, Any],
+) -> None:
+    """The same bodies, in many chunks, streamed and buffered: the same request and response.
+
+    The buffered records are step (c)'s (the tests above pin them), so this pins the streamed
+    ones to them. trickle sends each body in ten chunks, so a streamed body is joined."""
+    got: dict[bool, dict[str, Any]] = {}
+    for buffered in (True, False):
+        directory = tmp_path / ("buffered" if buffered else "streamed")
+        capture = Capture(Section({"dir": str(directory), "rules": [{"name": "all"}], **options_}))
+        origin = Origin(protocol=protocol, trickle=0.001, **origin_args)
+        await run_one(capture, origin, protocol=protocol, buffered=buffered, **send_args)
+        (got[buffered],) = records(directory)
+    streamed, buffered_record = got[False], got[True]
+    assert streamed["streamed"] is True and buffered_record["streamed"] is False
+    assert streamed["outcome"] == buffered_record["outcome"]
+    assert streamed["request"] == buffered_record["request"]
+    assert streamed["response"] == buffered_record["response"]
+
+
+def test_a_streamed_plain_body_keeps_only_max_body_bytes(tmp_path: Path) -> None:
+    capture = Capture(options(tmp_path, max_body_bytes=10))
+    collected = _Collected(capture, Headers([("content-type", "text/plain")]))
+    for _ in range(100):
+        collected.add(b"0123456789abcdef", False)
+    collected.add(b"", True)
+    assert collected.size == 10  # the bound: max_body_bytes, however long the body
+    fields = collected.fields(Headers([("content-type", "text/plain")]))
+    assert fields == {"body": "0123456789", "truncated": 1600}
+
+
+def test_a_streamed_body_redacted_whole_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mitm_proxy.middleware import capture as module
+
+    monkeypatch.setattr(module, "MAX_DECODED_BYTES", 100)
+    capture = Capture(options(tmp_path, redact={"json_paths": ["$.api_key"]}))
+    headers = Headers([("content-type", "application/json")])
+    collected = _Collected(capture, headers)
+    for _ in range(20):
+        collected.add(b'{"x": "0123456789"}', False)
+    collected.add(b"", True)
+    assert collected.kept == []  # past the bound nothing is held
+    assert collected.fields(headers) == {"body": None, "omitted": "oversize"}
+
+
+def test_an_event_line_that_never_ends_is_bounded(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from mitm_proxy.middleware import capture as module
+
+    monkeypatch.setattr(module, "MAX_DECODED_BYTES", 100)
+    capture = Capture(options(tmp_path, redact={"json_paths": ["$.api_key"]}))
+    headers = Headers([("content-type", "text/event-stream")])
+    collected = _Collected(capture, headers)
+    collected.add(b"data: 1\n", False)
+    for _ in range(20):
+        collected.add(b'{"api_key": "' + FAKE_KEY.encode(), False)
+    collected.add(b"", True)
+    assert collected.fields(headers) == {"body": None, "omitted": "oversize"}
+
+
+def test_a_streamed_body_cut_off_is_stored_only_where_it_is_safe(tmp_path: Path) -> None:
+    capture = Capture(options(tmp_path, redact={"json_paths": ["$.api_key"]}))
+    secret = f'{{"api_key": "{FAKE_KEY}"'.encode()
+    # JSON with json_paths: a body that never ended can't be parsed, so it can't be redacted.
+    as_json = Headers([("content-type", "application/json")])
+    collected = _Collected(capture, as_json)
+    collected.add(secret, False)
+    assert collected.fields(as_json) == {"body": None, "omitted": "incomplete"}
+    # An event stream: the complete lines, redacted; the line still arriving is dropped.
+    events = Headers([("content-type", "text/event-stream")])
+    collected = _Collected(capture, events)
+    collected.add(b'data: {"api_key": "a"}\n\ndata: ' + secret, False)
+    fields = collected.fields(events)
+    assert fields == {"body": 'data: {"api_key":"[REDACTED]"}\n\n', "incomplete": True}
+    # Anything else: what arrived, marked incomplete.
+    text = Headers([("content-type", "text/plain")])
+    collected = _Collected(capture, text)
+    collected.add(b"partial", False)
+    assert collected.fields(text) == {"body": "partial", "incomplete": True}
+
+
+async def test_a_streamed_request_body_nobody_read_is_omitted(tmp_path: Path) -> None:
+    class Gate(Middleware):
+        observe_only = True  # observe-only middleware may still deny, on the head
+
+        async def on_request(self, flow: Flow) -> Action:
+            return Action.DENY
+
+    capture = Capture(options(tmp_path))
+    status = await run_one(capture, before=[("gate", Gate())], method="POST", body=b"unread")
+    assert status == 403
+    record = records(tmp_path / "cap")[0]
+    assert record["request"]["body"] is None and record["request"]["omitted"] == "incomplete"
+    assert record["response"] is None and record["streamed"] is False
+
+
+async def test_a_local_answer_on_a_streaming_flow_is_not_streamed(tmp_path: Path) -> None:
+    class Local(Middleware):
+        observe_only = True
+
+        async def on_request(self, flow: Flow) -> Action:
+            flow.response = Response.make(200, b"cached")
+            return Action.STOP
+
+    capture = Capture(options(tmp_path))
+    await run_one(capture, before=[("cache", Local())])
+    record = records(tmp_path / "cap")[0]
+    assert record["outcome"] == "local:cache" and record["response"]["body"] == "cached"
+    assert record["streamed"] is False
+
+
+@contextlib.asynccontextmanager
+async def event_origin(sent: list[str], gate: asyncio.Event) -> AsyncIterator[int]:
+    """A plain-HTTP/1.1 origin on 127.0.0.1 that streams three server-sent events, like an LLM
+    API. It sends the first, then waits (up to 5 s) for gate before sending the rest: a proxy
+    that buffered would hold the first event back, and the gate would never open."""
+
+    async def handler(incoming: IncomingRequest, responder: Responder) -> None:
+        _ = b"".join([chunk async for chunk in incoming.body])
+        headers = Headers([("content-type", "text/event-stream"), ("cache-control", "no-cache")])
+        await responder.start(Response(200, headers), headers, end=False)
+        events = [
+            f'data: {{"delta": "Forty", "session": {{"token": "{FAKE_KEY}"}}}}\n\n',
+            'data: {"delta": "-two"}\n\n',
+            "data: [DONE]\n\n",
+        ]
+        for i, event in enumerate(events):
+            if i == 1:
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(gate.wait(), 5)
+            sent.append(event)
+            await responder.data(event.encode())
+            await asyncio.sleep(0.01)
+        await responder.end(None)
+
+    async def on_client(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        await H1Server(PlainStream(reader, writer), handler, idle_timeout=5).run()
+
+    server = await asyncio.start_server(on_client, "127.0.0.1", 0)
+    try:
+        yield server.sockets[0].getsockname()[1]
+    finally:
+        server.close()
+
+
+async def test_end_to_end_a_slow_event_stream_streams_through_a_reverse_listener(
+    tmp_path: Path,
+) -> None:
+    sent: list[str] = []
+    gate = asyncio.Event()
+    async with event_origin(sent, gate) as origin_port:
+        listen_port = free_port()
+        path = tmp_path / "config.yaml"
+        path.write_text(
+            f"""
+proxy:
+  port: {free_port()}
+reverse:
+  - listen: 127.0.0.1:{listen_port}
+    upstream: http://127.0.0.1:{origin_port}
+middleware:
+  chain: [capture]
+  config:
+    capture:
+      dir: {tmp_path / "captures"}
+      redact:
+        json_paths: ["$.api_key", "$..token"]
+      rules:
+        - name: llm
+          direction: inbound
+""",
+            encoding="utf-8",
+        )
+        config = load_config(path, environ={"MITM_PROXY_STATE_DIR": str(tmp_path / "state")})
+        proxy = ProxyServer(config)
+        await proxy.start()
+        try:
+            reader, writer = await asyncio.open_connection("127.0.0.1", listen_port)
+            client = H1Upstream(PlainStream(reader, writer), read_timeout=10)
+            body = json.dumps({"prompt": "six times seven?", "api_key": FAKE_KEY}).encode()
+            headers = Headers(
+                [("content-type", "application/json"), ("content-length", str(len(body)))]
+            )
+            request = Request("POST", "http", "front.example", "/v1/stream", headers)
+
+            async def one() -> AsyncIterator[bytes]:
+                yield body
+
+            response = await client.request(
+                request, headers, has_body=True, body=one(), trailers=lambda: None
+            )
+            assert response.response.status == 200
+            chunks = response.body.__aiter__()
+            first = await asyncio.wait_for(chunks.__anext__(), 4)
+            # The client has the first event while the origin has sent only that one.
+            assert first.startswith(b"data: {") and len(sent) == 1
+            gate.set()
+            received = first + b"".join([chunk async for chunk in chunks])
+            assert len(sent) == 3 and received == "".join(sent).encode()
+            await client.close()
+            for _ in range(500):
+                if proxy.metrics.capture_records.values:
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            await proxy.stop()
+    assert proxy.metrics.capture_records.values == {("llm", "written"): 1.0}
+    (path,) = (tmp_path / "captures").iterdir()
+    text = path.read_text("utf-8")
+    assert FAKE_KEY not in text
+    (record,) = [json.loads(line) for line in text.splitlines()]
+    assert record["streamed"] is True and record["outcome"] == "origin"
+    assert json.loads(record["request"]["body"])["api_key"] == "[REDACTED]"
+    assert record["response"]["body"] == (
+        'data: {"delta":"Forty","session":{"token":"[REDACTED]"}}\n\n'
+        'data: {"delta": "-two"}\n\n'
+        "data: [DONE]\n\n"
+    )
+    assert isinstance(record["timings"]["ttfb_ms"], float)
+
+
+def test_an_event_streams_last_line_needs_no_line_end(tmp_path: Path) -> None:
+    capture = Capture(options(tmp_path, redact={"json_paths": ["$.k"]}))
+    events = _Events(capture)
+    assert events.feed(b'data: {"k": 1}\r', final=False) == b""  # the CR may be half a CRLF
+    assert events.feed(b'\ndata: {"k": 2}', final=True) == (
+        b'data: {"k":"[REDACTED]"}\r\ndata: {"k":"[REDACTED]"}'
+    )
+
+
+@pytest.mark.parametrize("buffered", [False, True])
+async def test_request_trailers_are_recorded_on_both_paths(tmp_path: Path, buffered: bool) -> None:
+    capture = Capture(options(tmp_path))
+    await run_one(
+        capture,
+        Origin(protocol="h2"),
+        protocol="h2",
+        method="POST",
+        body=b"with trailers",
+        trailers=Headers([("x-api-key", FAKE_KEY), ("x-sum", "1")]),
+        buffered=buffered,
+    )
+    request = records(tmp_path / "cap")[0]["request"]
+    assert request["trailers"] == [["x-api-key", "[REDACTED]"], ["x-sum", "1"]]

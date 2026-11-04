@@ -357,7 +357,7 @@ SETTINGS = Settings(
             "body.max_buffer_bytes",
             67108864,
             "The largest body buffered for middleware. A larger body skips middleware and is "
-            "streamed through.",
+            "streamed through. Flows whose middleware is all observe-only aren't buffered.",
             check=positive,
         ),
         Setting(

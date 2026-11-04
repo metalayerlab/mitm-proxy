@@ -4,6 +4,12 @@ The protocol layers hand over an IncomingRequest and a Responder; this module
 builds the Flow, runs the pipeline, picks the framing, talks to the origin
 through the pool, and answers. It never sees h11 or h2 objects, which is what
 lets the two legs speak different protocols.
+
+A flow takes one of three paths. No middleware applies: the bodies pass straight through
+(the fast path). Every applying middleware is observe-only (design 0012): the hooks run on
+the heads and the bodies stream, each chunk written onward first and then shown to the chunk
+hooks (``_observed``). Otherwise each body is buffered, up to ``body.max_buffer_bytes``, and
+its chunk hooks see it whole.
 """
 
 from __future__ import annotations
@@ -20,7 +26,7 @@ from mitm_proxy.errors import (
     UpstreamTimeout,
 )
 from mitm_proxy.http import framing
-from mitm_proxy.http.body import BufferedBodyStream, PassthroughBody, empty
+from mitm_proxy.http.body import BufferedBodyStream, PassthroughBody, StreamingBody, empty
 from mitm_proxy.http.flow import (
     PLAIN_HTTP,
     ClientConn,
@@ -360,9 +366,11 @@ async def _exchange(
 
     active: FlowPipeline | None = run if run is not None and run.applies else None
     head_only = request.method == "HEAD"
+    streaming = active is not None and active.streams
 
-    # The request body: buffered when middleware applies, otherwise passed through.
-    if active is not None and incoming.has_body:
+    # The request body: buffered when middleware applies, streamed past it when it all only
+    # observes (design 0012), otherwise passed through.
+    if active is not None and incoming.has_body and not streaming:
         buffered = await _buffer(incoming.body, ctx.max_buffer)
         if buffered.fits:
             request.body = BufferedBodyStream(buffered.join())
@@ -371,6 +379,8 @@ async def _exchange(
         else:
             _oversize(ctx, flow, active, "request", buffered.size)
             request.body = PassthroughBody(_chain(buffered.chunks, incoming.body))
+    elif incoming.has_body and active is not None:
+        request.body = StreamingBody(_observed(incoming.body, active.observe_request_chunk))
     elif incoming.has_body:
         request.body = PassthroughBody(incoming.body)
     else:
@@ -447,6 +457,9 @@ async def _exchange(
         tally.mark("error")
         await send_simple(responder, status, str(e), head_only=head_only, timing=timing())
         return
+    if isinstance(body, StreamingBody):
+        # Both upstream layers send the whole body before the response head: it has ended.
+        request.trailers = incoming.trailers()
     await _respond(ctx, flow, upstream, tally, active, timed=timed)
 
 
@@ -532,13 +545,18 @@ async def _respond(
         declared = upstream.declared_length if upstream is not None else None
 
         if upstream is not None and active is not None and not active.response_skipped:
-            buffered = await _buffer(source.__aiter__(), ctx.max_buffer)
-            if buffered.fits:
-                response.body = BufferedBodyStream(buffered.join())
-                response.trailers = upstream.trailers()
+            if active.streams:
+                # Only the head is held for on_response; the body streams (design 0012).
+                observe = active.observe_response_chunk
+                response.body = StreamingBody(_observed(source.__aiter__(), observe))
             else:
-                _oversize(ctx, flow, active, "response", buffered.size)
-                response.body = PassthroughBody(_chain(buffered.chunks, source.__aiter__()))
+                buffered = await _buffer(source.__aiter__(), ctx.max_buffer)
+                if buffered.fits:
+                    response.body = BufferedBodyStream(buffered.join())
+                    response.trailers = upstream.trailers()
+                else:
+                    _oversize(ctx, flow, active, "response", buffered.size)
+                    response.body = PassthroughBody(_chain(buffered.chunks, source.__aiter__()))
             if not active.response_skipped:
                 outcome = await active.run_response()
                 data: bytes | None = None
@@ -597,6 +615,8 @@ async def _respond(
             trailers = response.trailers
             if trailers is None and upstream is not None:
                 trailers = upstream.trailers()
+                if isinstance(body, StreamingBody):
+                    response.trailers = trailers  # as a buffered body's are, for on_done
             await responder.end(trailers)
         # Read what's left (e.g. the end of a HEAD response) so the connection can be reused.
         if upstream is not None and not source.finished:
@@ -605,6 +625,25 @@ async def _respond(
     finally:
         if upstream is not None and not source.finished:
             await upstream.discard()
+
+
+async def _observed(
+    source: AsyncIterator[bytes], observe: Callable[[bytes, bool], Awaitable[None]]
+) -> AsyncIterator[bytes]:
+    """A streaming body (design 0012): each chunk is yielded first, and observed when the
+    consumer asks for the next one, which is after it has written this one onward; then a
+    last, empty call with is_last=True once the body has ended.
+
+    The hooks are awaited here, in the consumer's loop, never in a task of their own: a slow
+    hook slows the reading, which is the backpressure 0001's runner rule keeps. A body that
+    never ends (the client went away) never gets the is_last call.
+    """
+    async for chunk in source:
+        if not chunk:
+            continue
+        yield chunk
+        await observe(chunk, False)
+    await observe(b"", True)
 
 
 async def _timed(flow: Flow, body: AsyncIterator[bytes]) -> AsyncIterator[bytes]:

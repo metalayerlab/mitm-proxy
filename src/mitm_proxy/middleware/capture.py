@@ -1,10 +1,17 @@
 """The built-in ``capture`` middleware: the flows its rules match, as JSONL files (design 0012).
 
-Buffered, step (c): the bodies are read with ``read_all()`` in ``on_done``, so ``streamed`` is
-always false. Every record is redacted before anything reaches disk: headers (on by default),
-``json_paths`` in JSON bodies and ``query_params`` in the URL, then truncated to
-``max_body_bytes``. A record that can't be written is dropped and counted; nothing here ever
-affects the traffic (fail open, ``on_error`` stays ``"skip"``).
+Observe-only, step (e): the bodies are collected from the chunk hooks, so a flow on which
+capture is the only middleware streams, and ``streamed`` says whether its response did. Every
+record is redacted before anything reaches disk: headers (on by default), ``json_paths`` in
+JSON bodies and in server-sent events' JSON ``data:`` lines, and ``query_params`` in the URL,
+then truncated to ``max_body_bytes``. A record that can't be written is dropped and counted;
+nothing here ever affects the traffic (fail open, ``on_error`` stays ``"skip"``).
+
+What a streamed body costs to hold (``_Collected``): a body that is redacted or decoded whole
+(JSON with ``json_paths``, gzip or deflate) is kept up to ``MAX_DECODED_BYTES``, past which it
+is omitted as oversize; an event stream keeps ``max_body_bytes`` of redacted lines plus the one
+line still arriving (up to ``MAX_DECODED_BYTES``); any other body keeps ``max_body_bytes``. A
+buffered flow's body comes as one chunk, already in memory, and is recorded as in step (c).
 """
 
 from __future__ import annotations
@@ -28,8 +35,9 @@ from typing import Any
 from urllib.parse import unquote_plus
 
 from mitm_proxy.errors import StartupError
-from mitm_proxy.http.body import PassthroughBody
+from mitm_proxy.http.body import PassthroughBody, StreamingBody
 from mitm_proxy.http.flow import Flow
+from mitm_proxy.http.framing import response_allows_body
 from mitm_proxy.http.headers import Headers
 from mitm_proxy.pipeline import Middleware
 from mitm_proxy.scope import Pattern, normalize_host, parse_pattern
@@ -60,6 +68,7 @@ _TOP_KEYS = frozenset({"dir", "max_body_bytes", "redact", "rules"})
 _REDACT_KEYS = frozenset({"headers", "json_paths", "query_params", "marker"})
 _RULE_KEYS = frozenset({"name", "direction", "host", "path", "methods"})
 _RULE_NAME = re.compile(r"^[a-z0-9_-]+$")
+_LINE_END = re.compile(rb"\r\n|\r|\n")  # an event stream's line ends (the WHATWG SSE format)
 _PATH_NAME = r"[^.\[\]\s]+"
 _STEP = re.compile(rf"\.\.(?P<deep>{_PATH_NAME})|\.(?P<name>{_PATH_NAME})|\[(?P<index>\d+|\*)\]")
 
@@ -280,6 +289,15 @@ def _is_json(media_type: str) -> bool:
     )
 
 
+EVENT_STREAM = "text/event-stream"
+
+
+def _encoding(headers: Headers) -> str:
+    """The Content-Encoding, lower case; "" for none (or identity)."""
+    encoding = (headers.get("content-encoding") or "").strip().lower()
+    return "" if encoding == "identity" else encoding
+
+
 class _TooLarge(Exception):
     """A gzip/deflate body that decodes to more than MAX_DECODED_BYTES."""
 
@@ -315,9 +333,13 @@ def _inflate(data: bytes, wbits: int) -> tuple[bytes, bytes]:
 class Capture(Middleware):
     """Records the flows its rules match, one JSON line each, in ``<dir>/<rule>-<date>.jsonl``.
 
+    Observe-only (design 0012): its chunk hooks collect the bodies and never change them.
+
     Constructed with ``middleware.config.capture`` (a read-only mapping). ``clock`` is the wall
     clock (``time.time``), injectable for tests: it names the day's file and places the timings.
     """
+
+    observe_only = True
 
     def __init__(
         self,
@@ -376,6 +398,10 @@ class Capture(Middleware):
         # mitm_proxy_capture_records_total counter here once the rule names are declared.
         self.on_record: Callable[[str, str], None] | None = None
         self._matched: weakref.WeakKeyDictionary[Flow, Rule] = weakref.WeakKeyDictionary()
+        # Each matched flow's bodies, as the chunk hooks saw them: "request" and "response".
+        self._bodies: weakref.WeakKeyDictionary[Flow, dict[str, _Collected]] = (
+            weakref.WeakKeyDictionary()
+        )
         self._warned: dict[str, float] = {}
         self._check_dir()
 
@@ -406,15 +432,32 @@ class Capture(Middleware):
                 return True
         return False  # the flow keeps the unbuffered fast path
 
+    async def on_request_chunk(self, flow: Flow, chunk: bytes, is_last: bool) -> None:
+        self._collect(flow, "request", flow.request.headers, chunk, is_last)
+
+    async def on_response_chunk(self, flow: Flow, chunk: bytes, is_last: bool) -> None:
+        response = flow.response
+        if response is not None:
+            self._collect(flow, "response", response.headers, chunk, is_last)
+
+    def _collect(self, flow: Flow, which: str, headers: Headers, chunk: bytes, last: bool) -> None:
+        if flow not in self._matched:  # pragma: no cover - chunk hooks follow applies_to
+            return
+        bodies = self._bodies.setdefault(flow, {})
+        collected = bodies.get(which)
+        if collected is None:
+            collected = bodies[which] = _Collected(self, headers)
+        collected.add(chunk, last)
+
     async def on_done(self, flow: Flow) -> None:
         rule = self._matched.pop(flow, None)
+        bodies = self._bodies.pop(flow, {})
         if rule is None:  # pragma: no cover - on_done follows applies_to
             return
         try:
             wall = self._clock()
-            line = (
-                json.dumps(await self.record(flow, rule, wall), ensure_ascii=False) + "\n"
-            ).encode()
+            record = await self.record(flow, rule, wall, bodies)
+            line = (json.dumps(record, ensure_ascii=False) + "\n").encode()
             path = self.dir / f"{rule.name}-{_day(wall)}.jsonl"
             await asyncio.to_thread(_append, path, line)
         except (OSError, TimeoutError) as e:
@@ -448,8 +491,16 @@ class Capture(Middleware):
 
     # The record, redacted.
 
-    async def record(self, flow: Flow, rule: Rule, wall: float) -> dict[str, Any]:
-        """The flow as capture writes it; wall is now on the wall clock."""
+    async def record(
+        self,
+        flow: Flow,
+        rule: Rule,
+        wall: float,
+        bodies: Mapping[str, _Collected] | None = None,
+    ) -> dict[str, Any]:
+        """The flow as capture writes it; wall is now on the wall clock, bodies what the chunk
+        hooks collected ("request", "response")."""
+        bodies = bodies or {}
         request, response, t = flow.request, flow.response, flow.timings
         offset = wall - time.monotonic()
         req: dict[str, Any] = {
@@ -459,13 +510,16 @@ class Capture(Middleware):
         }
         if request.trailers is not None:
             req["trailers"] = self._headers(request.trailers)
-        req.update(await self._body(request.body, request.headers))
+        req.update(await self._body(bodies.get("request"), request.body, request.headers))
         resp: dict[str, Any] | None = None
         if response is not None:
             resp = {"status": response.status, "headers": self._headers(response.headers)}
             if response.trailers is not None:
                 resp["trailers"] = self._headers(response.trailers)
-            resp.update(await self._body(response.body, response.headers))
+            empty = not response_allows_body(request.method, response.status)
+            resp.update(
+                await self._body(bodies.get("response"), response.body, response.headers, empty)
+            )
         outcome = flow.outcome
         return {
             "rule": rule.name,
@@ -479,7 +533,8 @@ class Capture(Middleware):
                 "ttfb_ms": None if t.ttfb is None else round(t.ttfb * 1000, 1),
                 "end": _utc(None if t.complete is None else t.complete + offset),
             },
-            "streamed": False,
+            # The response went to the client chunk by chunk, unbuffered (design 0012).
+            "streamed": response is not None and isinstance(response.body, StreamingBody),
         }
 
     def _headers(self, headers: Headers) -> list[list[str]]:
@@ -500,8 +555,23 @@ class Capture(Middleware):
             parts.append(part)
         return f"{base}?{'&'.join(parts)}{hash_sep}{fragment}"
 
-    async def _body(self, body: object, headers: Headers) -> dict[str, Any]:
-        """The body's fields: body, and body_encoding, content_decoded, truncated, omitted."""
+    async def _body(
+        self,
+        collected: _Collected | None,
+        body: object,
+        headers: Headers,
+        no_body: bool = False,
+    ) -> dict[str, Any]:
+        """The body's fields: body, and body_encoding, content_decoded, truncated, omitted,
+        incomplete. From what the chunk hooks collected, else from the flow's body."""
+        if collected is not None:
+            return collected.fields(headers)
+        if isinstance(body, StreamingBody):
+            # Streamed, and no chunk hook saw it: a response that can't have one, or a body
+            # that was never read (a deny on the head, an upstream that failed first).
+            if no_body:
+                return self._fields(b"", headers)
+            return {"body": None, "omitted": "incomplete"}
         if isinstance(body, PassthroughBody):
             # Over body.max_buffer_bytes: the hooks were skipped and nothing was buffered.
             return {"body": None, "omitted": "oversize"}
@@ -509,10 +579,25 @@ class Capture(Middleware):
             data: bytes = await body.read_all()  # type: ignore[attr-defined]  # a BodyStream
         except RuntimeError:  # pragma: no cover - only a passthrough body refuses
             return {"body": None, "omitted": "oversize"}
+        return self._fields(data, headers)
+
+    def _mode(self, headers: Headers) -> str:
+        """How a streamed body is collected: "whole" (it is decoded or redacted as one),
+        "events" (redacted line by line) or "prefix" (only max_body_bytes are kept)."""
+        encoding = _encoding(headers)
+        if encoding in ("gzip", "deflate"):
+            return "whole"
+        if encoding or not self.json_paths:
+            return "prefix"
+        media_type = _media_type(headers)
+        if _is_json(media_type):
+            return "whole"
+        return "events" if media_type == EVENT_STREAM else "prefix"
+
+    def _fields(self, data: bytes, headers: Headers) -> dict[str, Any]:
+        """A whole body's fields: decoded, redacted, then cut and encoded."""
         fields: dict[str, Any] = {}
-        encoding = (headers.get("content-encoding") or "").strip().lower()
-        if encoding == "identity":
-            encoding = ""
+        encoding = _encoding(headers)
         decoded = False
         if data and encoding in ("gzip", "deflate"):
             try:
@@ -525,15 +610,21 @@ class Capture(Middleware):
                 decoded = True
                 fields["content_decoded"] = encoding
         media_type = _media_type(headers)
-        if self.json_paths and (decoded or not encoding) and _is_json(media_type):
-            # An event stream (text/event-stream) is stored with json_paths skipped until
-            # observe-only streaming lands (step e); any other non-JSON body is too.
-            data = self._redact_json(data)
-        original = len(data)
+        if self.json_paths and (decoded or not encoding):
+            if _is_json(media_type):
+                data = self._redact_json(data)
+            elif media_type == EVENT_STREAM:
+                data = _Events(self).feed(data, final=True)
+            # Any other body is stored with json_paths skipped (the wiki says so).
+        fields.update(self._encoded(data, len(data), bool(encoding) and not decoded))
+        return {"body": fields.pop("body"), **fields}
+
+    def _encoded(self, data: bytes, original: int, binary: bool) -> dict[str, Any]:
+        """The body, cut to max_body_bytes, as text or base64; original is its whole length."""
+        fields: dict[str, Any] = {}
         truncated = original > self.max_body_bytes
-        if truncated:
+        if len(data) > self.max_body_bytes:
             data = data[: self.max_body_bytes]
-        binary = bool(encoding) and not decoded
         text: str | None = None
         if not binary:
             try:
@@ -562,6 +653,131 @@ class Capture(Middleware):
         if not changed:
             return data  # nothing matched: keep the body exactly as it was sent
         return json.dumps(document, ensure_ascii=False, separators=(",", ":")).encode()
+
+    def _redact_event_line(self, line: bytes) -> bytes:
+        """One event-stream line, without its line end: a data: line whose value parses as
+        JSON gets json_paths; every other line is kept as it is."""
+        if not line.startswith(b"data:"):
+            return line
+        # "data:" and the one optional space the format allows are kept as they came.
+        prefix = b"data: " if line.startswith(b"data: ") else b"data:"
+        value = line[len(prefix) :]
+        redacted = self._redact_json(value)
+        return line if redacted is value else prefix + redacted
+
+
+class _Events:
+    """Event-stream redaction as the lines arrive: complete lines go out redacted, and the
+    line still arriving waits, in parts. Fed the whole body with final=True, it is the same
+    redaction a buffered body gets."""
+
+    def __init__(self, capture: Capture) -> None:
+        self.capture = capture
+        self._parts: list[bytes] = []  # the line still arriving
+        self.pending = 0  # its length so far
+
+    def clear(self) -> None:
+        self._parts.clear()
+        self.pending = 0
+
+    def feed(self, chunk: bytes, final: bool) -> bytes:
+        held_cr = bool(self._parts) and self._parts[-1].endswith(b"\r")
+        if not final and not held_cr and b"\n" not in chunk and b"\r" not in chunk:
+            # No line ends here: keep the part, without copying what came before (a long
+            # line in many small chunks would otherwise be copied again with each one).
+            if chunk:
+                self._parts.append(chunk)
+                self.pending += len(chunk)
+            return b""
+        data = b"".join([*self._parts, chunk]) if self._parts else chunk
+        self.clear()
+        out: list[bytes] = []
+        pos = 0
+        for m in _LINE_END.finditer(data):
+            if not final and m.end() == len(data) and m.group() == b"\r":
+                break  # a CR at the end may be half of a CRLF split across chunks
+            out.append(self.capture._redact_event_line(data[pos : m.start()]) + m.group())
+            pos = m.end()
+        rest = data[pos:]
+        if final and rest:
+            out.append(self.capture._redact_event_line(rest))
+        elif rest:
+            self._parts.append(rest)
+            self.pending = len(rest)
+        return b"".join(out)
+
+
+class _Collected:
+    """One message's body as capture's chunk hooks saw it, kept within bounds (the module
+    docstring). A body that arrives as one last chunk (a buffered flow's) is kept as it is."""
+
+    def __init__(self, capture: Capture, headers: Headers) -> None:
+        self.capture = capture
+        self.mode = capture._mode(headers)
+        self.binary = bool(_encoding(headers))  # "prefix" mode: an encoding not decoded
+        self.whole: bytes | None = None
+        self.kept: list[bytes] = []
+        self.size = 0  # bytes in kept
+        self.total = 0  # the body's length (after redaction, for an event stream)
+        self.events = _Events(capture) if self.mode == "events" else None
+        self.started = False
+        self.complete = False
+        self.oversize = False
+
+    def add(self, chunk: bytes, is_last: bool) -> None:
+        if self.complete:  # pragma: no cover - the pipeline sends one last call
+            return
+        first, self.started = not self.started, True
+        if first and is_last:
+            self.whole, self.complete = chunk, True
+            return
+        if self.oversize:
+            pass
+        elif self.events is not None:
+            self._keep(self.events.feed(chunk, is_last))
+            if self.events.pending > MAX_DECODED_BYTES:
+                self._drop()  # one line that never ends: it can't be redacted, so not stored
+        elif self.mode == "whole":
+            self.total += len(chunk)
+            if self.total > MAX_DECODED_BYTES:
+                self._drop()
+            elif chunk:
+                self.kept.append(chunk)
+        else:
+            self._keep(chunk)
+        self.complete = is_last
+
+    def _keep(self, data: bytes) -> None:
+        self.total += len(data)
+        room = self.capture.max_body_bytes - self.size
+        if room > 0 and data:
+            piece = data[:room]
+            self.kept.append(piece)
+            self.size += len(piece)
+
+    def _drop(self) -> None:
+        self.oversize = True
+        self.kept.clear()
+        if self.events is not None:
+            self.events.clear()
+
+    def fields(self, headers: Headers) -> dict[str, Any]:
+        if self.whole is not None:
+            return self.capture._fields(self.whole, headers)
+        if self.oversize:
+            return {"body": None, "omitted": "oversize"}
+        data = b"".join(self.kept)
+        if self.mode == "whole":
+            if not self.complete:
+                # Cut off before its end, it can't be decoded or redacted: not stored.
+                return {"body": None, "omitted": "incomplete"}
+            return self.capture._fields(data, headers)
+        # An event stream's line still arriving when it was cut off was never redacted, so it
+        # isn't kept (``pending``); every complete line was.
+        fields = self.capture._encoded(data, self.total, self.binary)
+        if not self.complete:
+            fields["incomplete"] = True
+        return fields
 
 
 def _lock(path: Path) -> threading.Lock:

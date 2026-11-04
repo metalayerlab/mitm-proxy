@@ -40,7 +40,7 @@ Generated from the code: don't edit the table, run `uv run scripts/gen-wiki.py`.
 | `middleware.chain` | `MITM_PROXY_MIDDLEWARE_CHAIN` | *(empty list)* | The middleware to run, by name, in order. A list: YAML, or comma-separated. |
 | `middleware.config` | `MITM_PROXY_MIDDLEWARE_CONFIG` | *(none)* | Options for each middleware, by name: `<name>: {...}`, passed to its class's constructor. A `{secret_file: <path>}` leaf is read as a secret. From the config file or `_FILE`, never a plain variable. |
 | `middleware.hook_timeout_ms` | `MITM_PROXY_MIDDLEWARE_HOOK_TIMEOUT_MS` | `5000` | A middleware hook that runs longer than this has failed, and is skipped for the flow. |
-| `body.max_buffer_bytes` | `MITM_PROXY_BODY_MAX_BUFFER_BYTES` | `67108864` | The largest body buffered for middleware. A larger body skips middleware and is streamed through. |
+| `body.max_buffer_bytes` | `MITM_PROXY_BODY_MAX_BUFFER_BYTES` | `67108864` | The largest body buffered for middleware. A larger body skips middleware and is streamed through. Flows whose middleware is all observe-only aren't buffered. |
 | `ca.cert` | `MITM_PROXY_CA_CERT` | *(none)* | Root CA certificate (PEM), usually via `_FILE`. Empty: `<state_dir>/ca/ca.pem`, generated on first start. |
 | `ca.key` | `MITM_PROXY_CA_KEY` | *(none)* | Root CA private key (PEM). Set together with `ca.cert`, or not at all. 🔒 Secret: use the `_FILE` variant. |
 | `ca.common_name` | `MITM_PROXY_CA_COMMON_NAME` | `mitm-proxy CA` | Common name of a newly generated root CA, as clients' trust stores show it. |
@@ -140,7 +140,7 @@ middleware:
 | `dir` | text | *(required)* | Where the files go: `<dir>/<rule>-YYYY-MM-DD.jsonl`, one per rule per UTC day. Created with mode `0700` if missing. |
 | `max_body_bytes` | whole number | `1048576` | The most body bytes stored per message, after redaction. A longer body is cut and marked `"truncated": <its length>`. |
 | `redact.headers` | list | `authorization`, `proxy-authorization`, `x-api-key`, `cookie`, `set-cookie` | Header (and trailer) names whose values are replaced, any case. A list you give **replaces** the default, so repeat the ones you still want. |
-| `redact.json_paths` | list | none | Values replaced in JSON bodies: `$` followed by `.name`, `[n]`, `[*]` and `..name` (that name at any depth). |
+| `redact.json_paths` | list | none | Values replaced in JSON bodies, and in the JSON `data:` lines of server-sent events: `$` followed by `.name`, `[n]`, `[*]` and `..name` (that name at any depth). |
 | `redact.query_params` | list | none | Query parameter names whose values are replaced in the recorded URL, every time the name appears. Names are case-sensitive and kept. |
 | `redact.marker` | text | `[REDACTED]` | What a redacted value becomes. |
 | `rules` | list | *(required, one or more)* | Which flows are recorded. The first rule that matches names the record; a flow is recorded once. |
@@ -151,18 +151,18 @@ middleware:
 | `rules[].methods` | list | any method | Methods, in any case. |
 
 - **Any unknown key**, at any level, stops startup (or refuses a new configuration): a typo such as `redcat:` must never quietly turn redaction off.
-- **Selection:** a flow no rule matches isn't buffered for capture at all. One that matches is buffered like any flow middleware applies to ([Bodies and framing](#bodies-and-framing)), and this version of capture always records `"streamed": false`.
-- **Redaction** happens before anything is written or cut: the header list applies to request and response headers and trailers, even with no `redact` key. `json_paths` apply only to bodies whose `Content-Type` is `application/json` or `*+json` and that parse as JSON (after a `gzip` or `deflate` encoding is decoded). Any other body, a server-sent-event stream (`text/event-stream`) included, is stored with `json_paths` **skipped, silently**: test the configuration against the traffic it will record (see [Writing Middleware](Writing-Middleware#the-built-in-capture-middleware)).
+- **Selection:** a flow no rule matches isn't buffered for capture at all. Capture is observe-only, so a flow it matches streams if every other middleware on it is observe-only too (`"streamed": true`), and is buffered like any other flow if one isn't ([Bodies and framing](#bodies-and-framing); `"streamed": false`).
+- **Redaction** happens before anything is written or cut: the header list applies to request and response headers and trailers, even with no `redact` key. `json_paths` apply only to bodies whose `Content-Type` is `application/json` or `*+json` and that parse as JSON (after a `gzip` or `deflate` encoding is decoded), and in a server-sent-event stream (`text/event-stream`) to each `data:` line whose value parses as JSON. Any other body or line is stored with `json_paths` **skipped, silently**: test the configuration against the traffic it will record (see [Writing Middleware](Writing-Middleware#the-built-in-capture-middleware)).
 - **If `dir` can't be created or written,** startup logs a warning and the proxy runs; each record that can't be written is dropped, counted in `mitm_proxy_capture_records_total{result="failed"}` and warned about at most once a minute per rule. Capture never affects the traffic.
 - Old files are never touched: deleting them (retention) is yours to do.
 
 ### Bodies and framing
 
-When any middleware applies to a flow, its bodies are read whole before the middleware sees them (one chunk each), up to `body.max_buffer_bytes`. A larger body is **streamed through without middleware**, and logged as a warning and counted in the `mitm_proxy_oversize_passthrough_total` metric. Flows no middleware applies to are never buffered.
+When any middleware applies to a flow, its bodies are read whole before the middleware sees them (one chunk each), up to `body.max_buffer_bytes`. A larger body is **streamed through without middleware**, and logged as a warning and counted in the `mitm_proxy_oversize_passthrough_total` metric. Flows no middleware applies to are never buffered, and neither are flows on which every middleware that applies is observe-only (such as `capture` alone): their bodies stream, each chunk shown to the middleware after it has gone onward, with no size limit ([Writing Middleware](Writing-Middleware#observe-only-middleware-and-streaming)).
 
 Memory: a body being buffered takes up to about twice its size for a moment, while it's assembled into one piece for middleware. A body that overflows the limit costs about the limit once. Budget roughly `2 × body.max_buffer_bytes` for each concurrent flow that middleware buffers.
 
-If a middleware that can rewrite bodies (one with a chunk hook) applies to a flow, the flow's bodies are sent with `Transfer-Encoding: chunked` (HTTP/1.1) or without a `content-length` (HTTP/2), because the final length isn't known in advance. Responses to `HEAD`, and `1xx`, `204` and `304` responses, never get framing headers added.
+If a middleware that can rewrite bodies (one with a chunk hook that isn't observe-only) applies to a flow, the flow's bodies are sent with `Transfer-Encoding: chunked` (HTTP/1.1) or without a `content-length` (HTTP/2), because the final length isn't known in advance. Responses to `HEAD`, and `1xx`, `204` and `304` responses, never get framing headers added.
 
 ### Timeouts
 

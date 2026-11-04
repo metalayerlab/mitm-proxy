@@ -9,6 +9,7 @@ the team (and its AI assistants) should know at a glance.
 - [x] Replace every `<!-- guidance -->` comment in docs/wiki/ (a Release PR is blocked until then)
 - [ ] project-template: the Dockerfile skeleton binds only the main listener (`MITM_PROXY_LISTEN_HOST=0.0.0.0`); this repo adds `MITM_PROXY_PROXY_HOST=0.0.0.0` for the `extra_ports` listener, a project-side addition to the skeleton ([#17](https://github.com/metalayerlab/project-template/issues/17), item 3)
 - [ ] Design 0002 (Proposed): answer its open questions; the control-plane client, enrollment and managed mode are not built
+- [ ] True chunk-by-chunk streaming to middleware, deferred by design 0001: half done. The read-only half is in (observe-only middleware stream unbuffered, design 0012); middleware that change bodies still get them buffered, whole
 
 ## Decided against (don't re-propose without reading this first)
 
