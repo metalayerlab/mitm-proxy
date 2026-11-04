@@ -341,6 +341,23 @@ def test_a_secret_file_leaf_is_a_secret(tmp_path: Path, write_config: Callable[.
     assert "s3cret" not in repr(cfg)
 
 
+def test_a_relative_secret_file_resolves_beside_the_config_file(
+    tmp_path: Path, write_config: Callable[..., Path], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # interpose 0.5.0 (its design 0010): against the config file's directory, never the working
+    # directory, so the same file means the same thing wherever the service starts.
+    (tmp_path / "secrets").mkdir()
+    (tmp_path / "secrets" / "token").write_text("beside\n", encoding="utf-8")
+    elsewhere = tmp_path / "elsewhere"
+    (elsewhere / "secrets").mkdir(parents=True)
+    (elsewhere / "secrets" / "token").write_text("cwd\n", encoding="utf-8")
+    monkeypatch.chdir(elsewhere)
+    path = write_config(_AVAILABLE + "  config:\n    cap: {token: {secret_file: secrets/token}}\n")
+    leaf = load_config(path, environ={}).middleware_config["cap"]["token"]
+    assert isinstance(leaf, Secret)
+    assert leaf.reveal() == "beside"
+
+
 def test_an_unreadable_secret_file_names_the_key(
     tmp_path: Path, write_config: Callable[..., Path]
 ) -> None:

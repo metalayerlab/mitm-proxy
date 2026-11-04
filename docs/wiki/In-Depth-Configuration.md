@@ -109,7 +109,7 @@ middleware:
 - The middleware checks its own options. If it refuses them (or takes no options), or if the name is registered as an instance (there's nothing to construct), startup fails with a line naming the middleware, and a new configuration is refused, keeping the running one.
 - The middleware is constructed again whenever a configuration is applied, so changed options apply to flows that start afterwards.
 - `middleware.config` comes from the config file, or from `MITM_PROXY_MIDDLEWARE_CONFIG_FILE`: the path of a YAML file holding the whole mapping (a Kubernetes ConfigMap or Secret mount). A plain `MITM_PROXY_MIDDLEWARE_CONFIG` variable is an error: a mapping in one variable is unreadable.
-- Never write a secret inline. Write the leaf as `{ secret_file: <path> }`: the file is read when the configuration is loaded (the trailing newline stripped) and the middleware gets a secret value, shown as `********` (see [Secrets](#secrets)). A file that can't be read is a configuration error naming the key, never the contents.
+- Never write a secret inline. Write the leaf as `{ secret_file: <path> }`: the file is read when the configuration is loaded (the trailing newline stripped) and the middleware gets a secret value, shown as `********` (see [Secrets](#secrets)). A relative path resolves against the directory of the file that names it (the config file, or the `_FILE` one), never the working directory; a path starting with `~` is an error (write it absolute). A file that can't be read is a configuration error naming the key, never the contents.
 
 #### Capture
 
