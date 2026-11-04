@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.2](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.1...v0.3.2) (2026-11-04)
+
+
+### ✨ Features
+
+* **middleware:** per-middleware configuration (design 0012 step a) ([#30](https://github.com/metalayerlab/mitm-proxy/issues/30)) ([5d6ca44](https://github.com/metalayerlab/mitm-proxy/commit/5d6ca44da2bb9ed7f1854e5be3351f47925070f8))
+
 ## [0.3.1](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.0...v0.3.1) (2026-11-03)
 
 
