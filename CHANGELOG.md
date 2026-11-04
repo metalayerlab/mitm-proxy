@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.1](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.0...v0.3.1) (2026-11-03)
+
+
+### 📚 Documentation
+
+* accept design 0012 capture middleware and reverse-proxy mode ([#27](https://github.com/metalayerlab/mitm-proxy/issues/27)) ([34a1b95](https://github.com/metalayerlab/mitm-proxy/commit/34a1b9551480a5873319a8fa774454652030a566))
+
 ## [0.3.0](https://github.com/metalayerlab/mitm-proxy/compare/v0.2.1...v0.3.0) (2026-11-02)
 
 
