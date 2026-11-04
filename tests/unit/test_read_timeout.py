@@ -5,17 +5,20 @@ an origin silent for five minutes takes moments, and the timeouts are the real c
 """
 
 import asyncio
+import logging
 from pathlib import Path
 
 import pytest
 
 from mitm_proxy.config import SETTINGS, ConfigError, load_config
+from mitm_proxy.errors import UpstreamConnectError, UpstreamError, UpstreamTimeout
+from mitm_proxy.exchange import ExchangeContext
 from mitm_proxy.http.h1 import H1Upstream
 from mitm_proxy.http.h2 import H2Upstream
 from mitm_proxy.server import ProxyServer
 from mitm_proxy.tls.terminate import TLSStream
 from mitm_proxy.upstream.pool import Target, TCPConnector
-from tests.harness import Origin, Reply, bench, send
+from tests.harness import Bench, Origin, Reply, bench, send
 from tests.helpers import memory_pair, run_virtual, trusting_client_context
 from tests.unit.test_server import make_config, tunnel
 
@@ -133,25 +136,67 @@ def test_an_idle_intercepted_client_is_closed_on_the_idle_timeout_not_the_read_t
     assert 1.0 <= run_virtual(scenario()) < 2.0
 
 
-async def test_the_websocket_upgrade_reads_with_it() -> None:
-    # The origin answers the upgrade after 0.5 s; the read timeout is shorter, the client
-    # idle timeout longer. Reading with the idle timeout, the 403 would come through.
-    b = bench(Origin(websocket=False, delay=0.5, status=403, body=b"no"))
-    b.pool.read_timeout = 0.05
-    ctx = b.context("http/1.1")
-    ctx.idle_timeout = 5
+UPGRADE = (
+    b"GET /ws HTTP/1.1\r\nHost: example.org\r\nConnection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
+)
+
+
+async def _upgrade(b: Bench, ctx: ExchangeContext, until: bytes) -> bytes:
+    """Send a WebSocket upgrade through the proxy; the client's bytes once until arrives."""
     client_stream = b.proxy(ctx)
-    await client_stream.write(
-        b"GET /ws HTTP/1.1\r\nHost: example.org\r\n"
-        b"Connection: Upgrade\r\nUpgrade: websocket\r\n\r\n"
-    )
+    await client_stream.write(UPGRADE)
     data = b""
-    while b"in time" not in data:
+    while until not in data:
         chunk = await client_stream.read()
         assert chunk, data
         data += chunk
-    assert data.startswith(b"HTTP/1.1 502")
-    assert b"the origin did not answer in time" in data
+    return data
+
+
+def test_the_websocket_upgrade_reads_with_it_and_a_silent_origin_is_a_504(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # The origin answers the upgrade after 300.1 s; the read timeout is five minutes, the
+    # client idle timeout longer. Reading with the idle timeout, the 403 would come through.
+    caplog.set_level(logging.INFO, logger="mitm_proxy.flows")
+
+    async def scenario() -> tuple[bytes, float]:
+        b = bench(Origin(websocket=False, delay=300.1, status=403, body=b"no"))
+        b.pool.read_timeout = 300.0
+        ctx = b.context("http/1.1", access_log=True)
+        ctx.idle_timeout = 3600
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        data = await _upgrade(b, ctx, b"in time\n")
+        took = loop.time() - started
+        while not any(r.name == "mitm_proxy.flows" for r in caplog.records):
+            await asyncio.sleep(0.01)  # a virtual wait: the run's limit still applies
+        await b.close()
+        return data, took
+
+    data, took = run_virtual(scenario())
+    # The same answer as any other origin read that times out (design 0012 section 5).
+    assert data.startswith(b"HTTP/1.1 504")
+    assert data.endswith(b"the origin did not answer in time\n")
+    assert b"server-timing" not in data.lower()  # never on an upgrade
+    assert 300.0 <= took < 300.1
+    line = next(r.getMessage() for r in caplog.records if r.name == "mitm_proxy.flows")
+    assert " GET https://example.org/ws 504 " in line
+    assert line.endswith(" outcome=error:504")
+
+
+@pytest.mark.parametrize(
+    ("error", "status"),
+    [(UpstreamConnectError("refused"), 502), (UpstreamTimeout("connect timed out"), 504)],
+)
+async def test_a_websocket_upgrade_that_cannot_connect_keeps_its_status(
+    error: UpstreamError, status: int
+) -> None:
+    origin = Origin(websocket=True)
+    origin.fail_connect = error
+    b = bench(origin)
+    data = await _upgrade(b, b.context("http/1.1"), str(error).encode() + b"\n")
+    assert data.startswith(f"HTTP/1.1 {status}".encode())
     await b.close()
 
 

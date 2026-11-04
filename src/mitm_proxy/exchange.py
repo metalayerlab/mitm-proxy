@@ -713,9 +713,11 @@ async def _websocket(
             request, headers, has_body=False, body=empty(), trailers=lambda: None
         )
     except UpstreamError as e:
+        # A silent origin is a 504 here as on every other origin read; other failures, 502.
+        status = 504 if isinstance(e, UpstreamTimeout) else 502
         log.warning("flow %s: %s", flow.id, e)
         tally.mark("error")
-        await send_simple(responder, 502, str(e), head_only=head_only)
+        await send_simple(responder, status, str(e), head_only=head_only)
         return
     if upstream.switched is None:
         try:
