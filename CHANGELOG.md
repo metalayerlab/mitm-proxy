@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.6](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.5...v0.3.6) (2026-11-04)
+
+
+### ✨ Features
+
+* **pipeline:** observe-only streaming middleware (design 0012 step e) ([#41](https://github.com/metalayerlab/mitm-proxy/issues/41)) ([80dde65](https://github.com/metalayerlab/mitm-proxy/commit/80dde658c59fa273da0b3783cd8e6ed706b9c7b1))
+
+
+### 📚 Documentation
+
+* propose region-aware proxy controller (design 0013) ([#36](https://github.com/metalayerlab/mitm-proxy/issues/36)) ([a74ab64](https://github.com/metalayerlab/mitm-proxy/commit/a74ab64df0fd64b5135d9c9a65ca30af82d6d2ad))
+
 ## [0.3.5](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.4...v0.3.5) (2026-11-04)
 
 
