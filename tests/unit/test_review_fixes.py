@@ -15,6 +15,7 @@ from mitm_proxy.http.messages import IncomingRequest
 from mitm_proxy.pipeline import Middleware
 from mitm_proxy.streams import PlainStream
 from tests.harness import Origin, bench, client_for, send
+from tests.helpers import run_virtual
 from tests.unit.test_access_log import _no_body
 
 BIG = b"x" * (700 * 1024)  # most of the 1 MiB HTTP/2 connection window
@@ -464,28 +465,42 @@ async def test_close_does_not_swallow_cancellation() -> None:
     peer_writer.close()
 
 
-async def test_one_large_write_to_a_steady_reader_is_not_cut_off() -> None:
-    """F2: the timeout is for no progress, not for the whole of a large write."""
-    stream, peer_writer, peer = await _socket_pair()
+def test_one_large_write_to_a_steady_reader_is_not_cut_off() -> None:
+    """F2: the timeout is for no progress, not for the whole of a large write.
+
+    On a virtual clock (tests.helpers.run_virtual): the timeout is per write piece, and at the
+    reader's pace a piece takes most of IDLE to drain, so on the wall clock a busy machine's
+    scheduling delays alone pushed a piece past the timeout (issue #45). Here time moves only
+    when every task waits, so the reader's pace is exact and the margin is the same every run.
+    """
     size = 400_000  # takes several timeout periods at the reader's pace
 
-    async def read_steadily() -> int:
-        received = 0
-        while received < size:
-            chunk = await peer.read(4096)  # about 400 KB/s: steady, but slow
-            if not chunk:
-                break
-            received += len(chunk)
-            await asyncio.sleep(0.01)
-        return received
+    async def scenario() -> tuple[float, int]:
+        stream, peer_writer, peer = await _socket_pair()
 
-    reader = asyncio.create_task(read_steadily())
-    started = asyncio.get_running_loop().time()
-    await stream.write(b"L" * size)  # one write, as a buffered body is
-    assert asyncio.get_running_loop().time() - started > IDLE  # it did take a while
-    assert await asyncio.wait_for(reader, 10) == size
-    await stream.close()
-    peer_writer.close()
+        async def read_steadily() -> int:
+            received = 0
+            while received < size:
+                chunk = await peer.read(4096)  # about 400 KB/s: steady, but slow
+                if not chunk:
+                    break
+                received += len(chunk)
+                await asyncio.sleep(0.01)
+            return received
+
+        reader = asyncio.create_task(read_steadily())
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        await stream.write(b"L" * size)  # one write, as a buffered body is
+        took = loop.time() - started
+        received = await asyncio.wait_for(reader, 10)
+        await stream.close()
+        peer_writer.close()
+        return took, received
+
+    took, received = run_virtual(scenario())
+    assert took > 3 * IDLE  # several timeout periods: a whole-write bound would have cut it off
+    assert received == size
 
 
 @pytest.mark.parametrize("write_timeout", [None, IDLE])
