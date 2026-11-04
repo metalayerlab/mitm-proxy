@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.3.7](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.6...v0.3.7) (2026-11-04)
+
+
+### 🐛 Bug Fixes
+
+* **exchange:** a WebSocket upgrade whose origin read times out answers 504 ([#44](https://github.com/metalayerlab/mitm-proxy/issues/44)) ([1076604](https://github.com/metalayerlab/mitm-proxy/commit/107660407005fa4edb3012cf09412e1482090a86))
+
+
+### 📚 Documentation
+
+* mark design 0012 Implemented ([#42](https://github.com/metalayerlab/mitm-proxy/issues/42)) ([dc48264](https://github.com/metalayerlab/mitm-proxy/commit/dc482648fe648720ca8f47583e1bca11576d99ce))
+
 ## [0.3.6](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.5...v0.3.6) (2026-11-04)
 
 
