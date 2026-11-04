@@ -619,8 +619,11 @@ class Capture(Middleware):
         fields.update(self._encoded(data, len(data), bool(encoding) and not decoded))
         return {"body": fields.pop("body"), **fields}
 
-    def _encoded(self, data: bytes, original: int, binary: bool) -> dict[str, Any]:
-        """The body, cut to max_body_bytes, as text or base64; original is its whole length."""
+    def _encoded(
+        self, data: bytes, original: int, binary: bool, partial: bool = False
+    ) -> dict[str, Any]:
+        """The body, cut to max_body_bytes, as text or base64; original is its whole length,
+        partial that it stopped before its end (so it may end inside a character too)."""
         fields: dict[str, Any] = {}
         truncated = original > self.max_body_bytes
         if len(data) > self.max_body_bytes:
@@ -629,7 +632,9 @@ class Capture(Middleware):
         if not binary:
             try:
                 # A cut can split a character: the incomplete tail is dropped, not the whole text.
-                text = codecs.getincrementaldecoder("utf-8")().decode(data, final=not truncated)
+                text = codecs.getincrementaldecoder("utf-8")().decode(
+                    data, final=not (truncated or partial)
+                )
             except UnicodeDecodeError:
                 text = None
         if text is not None:
@@ -774,7 +779,7 @@ class _Collected:
             return self.capture._fields(data, headers)
         # An event stream's line still arriving when it was cut off was never redacted, so it
         # isn't kept (``pending``); every complete line was.
-        fields = self.capture._encoded(data, self.total, self.binary)
+        fields = self.capture._encoded(data, self.total, self.binary, not self.complete)
         if not self.complete:
             fields["incomplete"] = True
         return fields

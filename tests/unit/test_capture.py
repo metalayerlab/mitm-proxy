@@ -1026,6 +1026,10 @@ def test_a_streamed_body_cut_off_is_stored_only_where_it_is_safe(tmp_path: Path)
     collected = _Collected(capture, text)
     collected.add(b"partial", False)
     assert collected.fields(text) == {"body": "partial", "incomplete": True}
+    # Cut off inside a character: the text up to it, not the whole body in base64.
+    collected = _Collected(capture, text)
+    collected.add(b"caf\xc3", False)
+    assert collected.fields(text) == {"body": "caf", "incomplete": True}
 
 
 async def test_a_streamed_request_body_nobody_read_is_omitted(tmp_path: Path) -> None:
