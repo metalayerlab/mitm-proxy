@@ -87,7 +87,7 @@ reverse:
 
 ### Middleware
 
-`middleware.available` registers installed middleware by name, as `name=module:attribute` (a `Middleware` subclass, or an instance). `middleware.chain` lists the names to run, in order. A chain name that isn't registered is a configuration error. There's no built-in middleware: the old built-in `log` became the `proxy.access_log` setting, and a chain that still names `log` fails at startup with a message saying so. See [Writing Middleware](Writing-Middleware).
+`middleware.available` registers installed middleware by name, as `name=module:attribute` (a `Middleware` subclass, or an instance). `middleware.chain` lists the names to run, in order. A chain name that isn't registered (or built in) is a configuration error. One middleware is built in: `capture` ([Capture](#capture)), always available, so it needs no `middleware.available` entry, and it runs only when the chain names it. A `middleware.available` entry named `capture` is a configuration error, because it would shadow the built-in. The old built-in `log` became the `proxy.access_log` setting, and a chain that still names `log` fails at startup with a message saying so. See [Writing Middleware](Writing-Middleware).
 
 #### Options for a middleware
 
@@ -104,11 +104,56 @@ middleware:
 ```
 
 - The class is constructed with its entry as one argument, a read-only mapping (nested mappings and lists are read-only too). A middleware with no entry is constructed with no arguments, as before.
-- An entry for a name that isn't in `middleware.available` is a configuration error. An entry that isn't a mapping is too.
+- An entry for a name that isn't in `middleware.available` or built in is a configuration error. An entry that isn't a mapping is too.
 - The middleware checks its own options. If it refuses them (or takes no options), or if the name is registered as an instance (there's nothing to construct), startup fails with a line naming the middleware, and a new configuration is refused, keeping the running one.
 - The middleware is constructed again whenever a configuration is applied, so changed options apply to flows that start afterwards.
 - `middleware.config` comes from the config file, or from `MITM_PROXY_MIDDLEWARE_CONFIG_FILE`: the path of a YAML file holding the whole mapping (a Kubernetes ConfigMap or Secret mount). A plain `MITM_PROXY_MIDDLEWARE_CONFIG` variable is an error: a mapping in one variable is unreadable.
 - Never write a secret inline. Write the leaf as `{ secret_file: <path> }`: the file is read when the configuration is loaded (the trailing newline stripped) and the middleware gets a secret value, shown as `********` (see [Secrets](#secrets)). A file that can't be read is a configuration error naming the key, never the contents.
+
+#### Capture
+
+The built-in `capture` middleware records the flows its rules match as JSON Lines files, with credentials redacted before anything is written (design 0012). Put `capture` in the chain and give it options:
+
+```yaml
+middleware:
+  chain: [capture]
+  config:
+    capture:
+      dir: /var/lib/mitm-proxy/captures
+      max_body_bytes: 1048576
+      redact:
+        headers: [authorization, proxy-authorization, x-api-key, cookie, set-cookie]
+        json_paths: ["$.api_key", "$..token"]
+        query_params: [api_key]
+        marker: "[REDACTED]"
+      rules:
+        - name: inbound-api
+          direction: inbound
+          host: api.internal
+          path: "/v1/**"
+          methods: [POST]
+```
+
+| Key | Type | Default | Meaning |
+|---|---|---|---|
+| `dir` | text | *(required)* | Where the files go: `<dir>/<rule>-YYYY-MM-DD.jsonl`, one per rule per UTC day. Created with mode `0700` if missing. |
+| `max_body_bytes` | whole number | `1048576` | The most body bytes stored per message, after redaction. A longer body is cut and marked `"truncated": <its length>`. |
+| `redact.headers` | list | `authorization`, `proxy-authorization`, `x-api-key`, `cookie`, `set-cookie` | Header (and trailer) names whose values are replaced, any case. A list you give **replaces** the default, so repeat the ones you still want. |
+| `redact.json_paths` | list | none | Values replaced in JSON bodies: `$` followed by `.name`, `[n]`, `[*]` and `..name` (that name at any depth). |
+| `redact.query_params` | list | none | Query parameter names whose values are replaced in the recorded URL, every time the name appears. Names are case-sensitive and kept. |
+| `redact.marker` | text | `[REDACTED]` | What a redacted value becomes. |
+| `rules` | list | *(required, one or more)* | Which flows are recorded. The first rule that matches names the record; a flow is recorded once. |
+| `rules[].name` | text | *(required)* | Unique; lower-case letters, digits, `-` and `_` (it names the files). |
+| `rules[].direction` | text | `any` | `inbound` (a [reverse listener](#reverse-proxy-mode)'s flows), `egress` (the forward proxy's) or `any`. |
+| `rules[].host` | text | any host | One pattern in the [allowlist](#the-allowlist)'s syntax: exact, or `*.suffix`. For a reverse flow it's the upstream's host. |
+| `rules[].path` | text | any path | A glob on the path without its query: `*` within one segment, `**` across segments. |
+| `rules[].methods` | list | any method | Methods, in any case. |
+
+- **Any unknown key**, at any level, stops startup (or refuses a new configuration): a typo such as `redcat:` must never quietly turn redaction off.
+- **Selection:** a flow no rule matches isn't buffered for capture at all. One that matches is buffered like any flow middleware applies to ([Bodies and framing](#bodies-and-framing)), and this version of capture always records `"streamed": false`.
+- **Redaction** happens before anything is written or cut: the header list applies to request and response headers and trailers, even with no `redact` key. `json_paths` apply only to bodies whose `Content-Type` is `application/json` or `*+json` and that parse as JSON (after a `gzip` or `deflate` encoding is decoded). Any other body, a server-sent-event stream (`text/event-stream`) included, is stored with `json_paths` **skipped, silently**: test the configuration against the traffic it will record (see [Writing Middleware](Writing-Middleware#the-built-in-capture-middleware)).
+- **If `dir` can't be created or written,** startup logs a warning and the proxy runs; each record that can't be written is dropped, counted in `mitm_proxy_capture_records_total{result="failed"}` and warned about at most once a minute per rule. Capture never affects the traffic.
+- Old files are never touched: deleting them (retention) is yours to do.
 
 ### Bodies and framing
 

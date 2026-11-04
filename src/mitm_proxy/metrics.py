@@ -3,9 +3,9 @@
 The metric types and the text format come from interpose (design 0009); this module says which
 metrics exist, their help, buckets and labels. Every label takes its values from a set declared
 here, up front, so the intercepted host can never become a label (it would make the series count
-unbounded): a value outside the set is a ``ValueError`` at the call that used it. The one set that
-grows is ``middleware``, declared from the configuration's registry when a snapshot is built
-(``ProxyServer._build``), never from traffic.
+unbounded): a value outside the set is a ``ValueError`` at the call that used it. The sets that
+grow are ``middleware`` and capture's ``rule``, declared from the configuration when a snapshot is
+built (``ProxyServer._build``), never from traffic.
 """
 
 from __future__ import annotations
@@ -46,6 +46,7 @@ UPSTREAM_PROTOCOLS = ("http/1.1", "h2")  # what ConnectionPool.counts() reports
 CONFIG_RESULTS = ("applied",)
 CERTIFICATE_KINDS = ("ca",)
 REUSED = ("true", "false")
+CAPTURE_RESULTS = ("written", "failed")
 
 
 class Metrics:
@@ -155,10 +156,25 @@ class Metrics:
                 (self.middleware,),
             )
         )
+        # The capture middleware's records (design 0012), last, so the text before it is
+        # unchanged. Its `rule` values come from the configuration, at build and reload; the
+        # oversize counter's `direction` above is a body's (request/response), not a flow's.
+        self.capture_rule = Label("rule")
+        self.capture_records = reg.register(
+            Counter(
+                "mitm_proxy_capture_records_total",
+                "Records the capture middleware wrote or dropped, by rule and result.",
+                (self.capture_rule, Label("result", CAPTURE_RESULTS)),
+            )
+        )
 
     def declare_middleware(self, names: Iterable[str]) -> None:
         """Allow these middleware names as label values (the registry's, at build and reload)."""
         self.middleware.declare(*names)
+
+    def declare_capture_rules(self, names: Iterable[str]) -> None:
+        """Allow these capture rule names as label values (from the configuration, 0009)."""
+        self.capture_rule.declare(*names)
 
     def all(self) -> list[Metric]:
         return list(self.registry)

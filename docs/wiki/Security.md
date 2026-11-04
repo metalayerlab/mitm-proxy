@@ -29,6 +29,8 @@ mitm-proxy decrypts traffic on purpose, so the question is who else can use that
 
 **What the proxy reveals to clients:** by default, only what interception needs (its certificates, and its own error responses: `403`, `407`, `502`, `504`; a middleware's deny or fail-closed failure names that middleware in the body, and nothing else). The access log (`proxy.access_log`) records each intercepted request's URL, including its query string, which can hold tokens; treat the log as sensitive. `proxy.access_log_relayed` also records every destination host and client address the proxy relays for, so it's off by default. With `proxy.server_timing` on, every intercepted response also carries the proxy's timings, and middleware names when middleware answered. A page's own scripts can read them (`PerformanceResourceTiming.serverTiming`) and report them to the site, so a site can tell it was intercepted. The proxy never sends `Timing-Allow-Origin`, so other sites' scripts can't read them. Turn it on deliberately, for debugging.
 
+**Captures** (the built-in `capture` middleware) hold request and response bodies, which can be personal or secret data beyond what redaction catches: credentials in a body that isn't JSON, in a header you didn't list, or in a server-sent event. Capture is opt-in per rule, and nothing is recorded until a rule matches. Files are created `0600` in a directory created `0700`, for the proxy's user only; redaction happens before anything is written, never afterwards. Keep the directory on storage only that user reads, and delete old files yourself: capture never does. See [In-Depth Configuration](In-Depth-Configuration#capture).
+
 **Out of scope:**
 
 - clients that choose to trust the root;

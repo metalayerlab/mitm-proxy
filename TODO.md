@@ -49,3 +49,5 @@ the team (and its AI assistants) should know at a glance.
 - Buffering bodies for capture: holds server-sent events back and distorts recorded timings; observe-only streaming (design 0012).
 - `proxy.idle_timeout_ms` as the knob for slow origins: keeps idle clients and tunnels open as long; `upstream.read_timeout_ms` (design 0012).
 - Redacting captures after writing: credentials would reach disk (design 0012).
+- Middleware options as keyword arguments (`cls(**config)`): keys like `dir` clash with builtins and a typo becomes a distant `TypeError`; one mapping, validated by the middleware (design 0012).
+- Detecting body mutation at run time instead of declaring `observe_only`: degrades quietly to buffering, as 0001 found for framing (design 0012).

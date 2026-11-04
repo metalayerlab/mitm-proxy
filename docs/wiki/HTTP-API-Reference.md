@@ -45,7 +45,7 @@ The hash changes when any setting changes, except secrets, which count only as s
 
 ### `GET /metrics`
 
-Prometheus text format (`text/plain; version=0.0.4`). No metric is labelled with a hostname: every label takes its values from a set the proxy declares up front (design 0009), and the `middleware` label from the names in `middleware.available`.
+Prometheus text format (`text/plain; version=0.0.4`). No metric is labelled with a hostname: every label takes its values from a set the proxy declares up front (design 0009), the `middleware` label from the names in `middleware.available` (and the built-in `capture`), and the `rule` label from capture's rule names, declared when a configuration is applied.
 
 | Metric | Type | Labels |
 |---|---|---|
@@ -63,6 +63,9 @@ Prometheus text format (`text/plain; version=0.0.4`). No metric is labelled with
 | `mitm_proxy_upstream_connect_seconds` | histogram | `reused`: `true`, `false` |
 | `mitm_proxy_origin_ttfb_seconds` | histogram | |
 | `mitm_proxy_middleware_duration_seconds` | histogram | `middleware`: a name from `middleware.available` |
+| `mitm_proxy_capture_records_total` | counter | `rule`: a capture rule's name; `result`: `written`, `failed` |
+
+`mitm_proxy_oversize_passthrough_total`'s `direction` is the body that was too big (`request` or `response`), not a flow's direction (`inbound` or `egress`, which capture records). `mitm_proxy_capture_records_total` counts each record the capture middleware wrote, or dropped because it couldn't write it (see [Troubleshooting](Troubleshooting)); it has a series only once a record has been counted.
 
 The four histograms cover intercepted HTTP flows only (not WebSockets, not relayed traffic), observed when each flow ends, and are always on. They measure the same things as the access log's `total`, `connect`, `ttfb` and `mw` (see [In-Depth Configuration](In-Depth-Configuration#the-access-log)). The middleware histogram is the one place that includes `on_done` time. Buckets are fixed: 5 ms to 60 s for the first three, 100 µs to 5 s for middleware.
 
@@ -82,6 +85,9 @@ rate(mitm_proxy_upstream_connect_seconds_sum{reused="false"}[5m])
 
 # The slowest middleware, by p99
 histogram_quantile(0.99, sum by (le, middleware) (rate(mitm_proxy_middleware_duration_seconds_bucket[5m])))
+
+# Capture records dropped, by rule
+sum by (rule) (rate(mitm_proxy_capture_records_total{result="failed"}[5m]))
 ```
 
 ### `GET /ca.pem` and `GET /ca.der`

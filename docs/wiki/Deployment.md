@@ -16,6 +16,8 @@ docker compose -f contrib/docker/compose.yml logs -f
 Two ports are published, both on `127.0.0.1` only: the admin API (8080) and the proxy (3128). Inside the container both listeners bind `0.0.0.0`: the image sets `MITM_PROXY_LISTEN_HOST` and `MITM_PROXY_PROXY_HOST` (the compose file repeats them, to be explicit), because the `127.0.0.1` default outside containers can't be reached through a published port. The published ports decide what's reachable. Because of that, the proxy's startup warning about listening on `0.0.0.0` without `proxy.auth` also appears in containers; it matters only if you publish 3128 beyond loopback. To offer the proxy to other machines, publish 3128 beyond loopback **and** set `proxy.auth` (`MITM_PROXY_PROXY_AUTH_FILE`). Put a reverse proxy (Traefik) in front of the admin API for remote access.
 
 To run a **reverse** listener (record a service's inbound traffic; see [In-Depth Configuration](In-Depth-Configuration#reverse-proxy-mode)), set `MITM_PROXY_REVERSE_0_LISTEN` / `_0_UPSTREAM` and publish the listen port. The compose file has both commented. A reverse listener has no authentication, so publish its port only where the clients you mean can reach it.
+To **capture** flows (the built-in `capture` middleware; see [In-Depth Configuration](In-Depth-Configuration#capture)), its `dir` must be writable, and the root filesystem isn't. Put it under the state volume (`dir: /var/lib/mitm-proxy/captures`, which is `./state/captures` on the host), or mount a volume of its own read-write (`- ./captures:/captures`, with `dir: /captures`). The files hold request and response bodies: keep the host directory readable only by uid 1000, and delete old files yourself.
+
 Secrets go in files mounted read-only, passed as `MITM_PROXY_<KEY>_FILE`. The root CA is generated in `./state/ca/` on first start: keep that directory, it's what your clients trust.
 
 ## Kubernetes
@@ -37,7 +39,7 @@ patches: []          # replicas, resources, the ConfigMap's config.yaml, ingress
 
 The Service exposes the admin API (`http`, 8080) and the proxy (`proxy`, 3128). The NetworkPolicy admits only the `traefik` namespace to the admin API and **no one** to the proxy port: add a rule for each namespace whose pods should use the proxy (an example is commented in `networkpolicy.yaml`), and set `proxy.auth`. For a reverse listener, uncomment the `reverse` port in `deployment.yaml` and `service.yaml` and admit only its intended clients in the NetworkPolicy.
 
-State is on an `emptyDir`, so the root CA is regenerated whenever the pod is replaced, and clients must trust the new one each time. For a stable CA, swap it for a PersistentVolumeClaim, or supply the CA from a Secret: `deployment.yaml` has the `secrets` volume and the `MITM_PROXY_CA_CERT_FILE`, `MITM_PROXY_CA_KEY_FILE` and `MITM_PROXY_PROXY_AUTH_FILE` variables commented out, ready to enable. Secrets: SOPS-encrypted Secrets in the GitOps repo, mounted as files.
+State is on an `emptyDir`, so the root CA is regenerated whenever the pod is replaced, and clients must trust the new one each time. For a stable CA, swap it for a PersistentVolumeClaim, or supply the CA from a Secret: `deployment.yaml` has the `secrets` volume and the `MITM_PROXY_CA_CERT_FILE`, `MITM_PROXY_CA_KEY_FILE` and `MITM_PROXY_PROXY_AUTH_FILE` variables commented out, ready to enable. Secrets: SOPS-encrypted Secrets in the GitOps repo, mounted as files. For **capture**, mount a volume read-write at its `dir` (a PersistentVolumeClaim, so captures outlive the pod; an `emptyDir` loses them on every replacement).
 
 ## systemd
 
@@ -52,7 +54,7 @@ systemctl daemon-reload && systemctl enable --now mitm-proxy
 journalctl -u mitm-proxy -f
 ```
 
-The proxy listens on `127.0.0.1:3128` and the admin API on `127.0.0.1:8080` (set `proxy.host` and `proxy.auth` to serve other machines). The root CA is generated in `/var/lib/mitm-proxy/ca/` on first start. The unit runs as the `mitm-proxy` system user in a tight sandbox (`systemd-analyze security mitm-proxy` scores it). If a feature needs more access, loosen exactly one directive, with a comment saying why.
+The proxy listens on `127.0.0.1:3128` and the admin API on `127.0.0.1:8080` (set `proxy.host` and `proxy.auth` to serve other machines). The root CA is generated in `/var/lib/mitm-proxy/ca/` on first start. For **capture**, use a `dir` under `/var/lib/mitm-proxy` (the unit's `StateDirectory=`, mode `0700`), say `/var/lib/mitm-proxy/captures`: `ProtectSystem=strict` makes everywhere else read-only, and a `dir` elsewhere needs a `ReadWritePaths=` line. The unit runs as the `mitm-proxy` system user in a tight sandbox (`systemd-analyze security mitm-proxy` scores it). If a feature needs more access, loosen exactly one directive, with a comment saying why.
 
 ## Upgrading
 
