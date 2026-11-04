@@ -28,4 +28,4 @@ configMapGenerator:
       - config.yaml
 images:
   - name: ghcr.io/metalayerlab/mitm-proxy
-    newTag: "0.3.2" # x-release-please-version
+    newTag: "0.3.3" # x-release-please-version

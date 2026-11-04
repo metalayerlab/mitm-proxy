@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.3](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.2...v0.3.3) (2026-11-04)
+
+
+### ✨ Features
+
+* **proxy:** reverse-proxy mode (design 0012 step b) ([#32](https://github.com/metalayerlab/mitm-proxy/issues/32)) ([df6e981](https://github.com/metalayerlab/mitm-proxy/commit/df6e981cea534ef99a692916bc66a1c1a29d9c65))
+
 ## [0.3.2](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.1...v0.3.2) (2026-11-04)
 
 
