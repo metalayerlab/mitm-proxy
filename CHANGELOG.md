@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.5](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.4...v0.3.5) (2026-11-04)
+
+
+### ✨ Features
+
+* **upstream:** upstream.read_timeout_ms for slow origins (design 0012 step d) ([#37](https://github.com/metalayerlab/mitm-proxy/issues/37)) ([7bdafa7](https://github.com/metalayerlab/mitm-proxy/commit/7bdafa73813f8f7227a8ea3cc30f9f8931dae97d))
+
 ## [0.3.4](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.3...v0.3.4) (2026-11-04)
 
 
