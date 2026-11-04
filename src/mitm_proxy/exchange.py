@@ -663,7 +663,9 @@ async def _websocket(
     flow.server_conn = ServerConn(
         target.host, target.port, "http/1.1", target.tls, target.sni, address
     )
-    upstream_conn = H1Upstream(stream, read_timeout=ctx.idle_timeout)
+    # The upgrade's response is an origin read (upstream.read_timeout_ms, design 0012); the
+    # relay after a 101 is idle traffic, and stays on the client idle timeout.
+    upstream_conn = H1Upstream(stream, read_timeout=ctx.pool.read_timeout)
     headers = request.headers.copy()
     headers.set("connection", "Upgrade")
     headers.set("upgrade", incoming.raw_headers.get("upgrade") or "websocket")

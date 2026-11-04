@@ -49,6 +49,7 @@ NAMES = {
     "upstream.extra_ca_file": "MITM_PROXY_UPSTREAM_EXTRA_CA_FILE",
     "upstream.connect_timeout_ms": "MITM_PROXY_UPSTREAM_CONNECT_TIMEOUT_MS",
     "upstream.idle_timeout_ms": "MITM_PROXY_UPSTREAM_IDLE_TIMEOUT_MS",
+    "upstream.read_timeout_ms": "MITM_PROXY_UPSTREAM_READ_TIMEOUT_MS",
     "upstream.max_connections_per_host": "MITM_PROXY_UPSTREAM_MAX_CONNECTIONS_PER_HOST",
 }
 

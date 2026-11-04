@@ -97,4 +97,7 @@ upstream:
   extra_ca_file: ""
   connect_timeout_ms: 10000
   idle_timeout_ms: 60000
+  # The wait for an origin's next bytes (response head, each body read); not the whole
+  # response. Raise it for slow origins such as LLM APIs, not proxy.idle_timeout_ms.
+  # read_timeout_ms: 120000
   max_connections_per_host: 6

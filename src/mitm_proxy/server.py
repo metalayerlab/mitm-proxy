@@ -124,7 +124,9 @@ class ProxyServer:
             max_per_host=config.upstream_max_connections_per_host,
             idle_timeout=config.upstream_idle_timeout_ms / 1000,
             connect_timeout=config.upstream_connect_timeout_ms / 1000,
-            read_timeout=config.idle_timeout_ms / 1000,
+            # Waiting on an origin's bytes has its own setting (design 0012): a slow origin
+            # needs a long one, and the client side's idle timeout stays short.
+            read_timeout=config.upstream_read_timeout_ms / 1000,
         )
         self.metrics.upstream_connections.read = lambda: {
             (protocol,): float(n) for protocol, n in self.pool.counts().items()
@@ -193,7 +195,7 @@ class ProxyServer:
         self.pool.max_per_host = config.upstream_max_connections_per_host
         self.pool.idle_timeout = config.upstream_idle_timeout_ms / 1000
         self.pool.connect_timeout = config.upstream_connect_timeout_ms / 1000
-        self.pool.read_timeout = config.idle_timeout_ms / 1000
+        self.pool.read_timeout = config.upstream_read_timeout_ms / 1000
         if isinstance(self.connector, TCPConnector):
             self.connector.write_timeout = config.idle_timeout_ms / 1000
         self.metrics.config_applies.inc("applied")
