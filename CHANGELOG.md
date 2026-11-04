@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.8](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.7...v0.3.8) (2026-11-04)
+
+
+### 🐛 Bug Fixes
+
+* **tests:** run the steady-reader write test on the virtual clock ([#47](https://github.com/metalayerlab/mitm-proxy/issues/47)) ([8e437f9](https://github.com/metalayerlab/mitm-proxy/commit/8e437f9dd5316394473819aea0f01a392c1d64f2))
+
 ## [0.3.7](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.6...v0.3.7) (2026-11-04)
 
 
