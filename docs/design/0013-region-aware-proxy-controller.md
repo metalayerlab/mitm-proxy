@@ -2,7 +2,7 @@
 
 <!-- Add a line for this record to the index in docs/design/README.md (CI checks). -->
 
-Status: Proposed
+Status: Approved (approved by the brain coordinator for Stephen, 2026-11-04)
 Date: 2026-11-04
 Authors: Stephen Cox; drafted by Claude (Claude Code)
 
@@ -116,11 +116,11 @@ connection. Both live in the exchange and the connection pool. A separate progra
 into those internals or fork them. As a feature, mitm-proxy keeps one place for TLS, the pool, the access
 log and metrics, and the controller costs nothing when `exits` is empty (the default).
 
-**Name: `passport`** (recommended), for the deployment profile and the documentation ("the passport
-profile"): each site is shown the right passport at the border. Alternatives: **`waypoint`** (neutral,
-but says nothing about regions) and **`border`** (says regions, but reads as blocking rather than
-routing). The settings use plain names (`exits`, `routing.*`, `regions.*`), so the name is only a label.
-Open question 1.
+**Name: `passport`** (decided, open question 1), for the deployment profile and the documentation
+("the passport profile"): each site is shown the right passport at the border. The alternatives were
+**`waypoint`** (neutral, but says nothing about regions) and **`border`** (says regions, but reads as
+blocking rather than routing). The settings use plain names (`exits`, `routing.*`, `regions.*`), so the
+name is only a label.
 
 ### 2. Exits and chaining
 
@@ -368,12 +368,12 @@ routing:
 - **Binding:** the first flow binds the key to the first ready exit in `via`. Every flow refreshes it.
 - **How long:** until `routing.sticky_idle_ms` without a flow (default 30 minutes) or
   `routing.sticky_max_ms` in all (default 12 hours), whichever is first, or until its exit goes down
-  (open question 2).
+  (decided as recommended, open question 2).
 - **When the exit goes down:** the binding ends; flows already open on it end with it (restarting a
   one-pod exit drops them anyway); the next flow binds to the next ready exit in `via`, and the change is
   logged.
 - **After a confirmed block** with a successful retry (section 7), the binding moves to the exit that
-  worked, for the rest of the binding's life. This is temporary, shown in `/v1/routes`, and never
+  worked, for the rest of the binding's life (decided, open question 2). This is temporary, shown in `/v1/routes`, and never
   written into the rules: it is not a learned rule.
 - Bindings live in memory. A restart starts fresh, which costs one rebinding.
 
@@ -569,7 +569,7 @@ the same exit, alternating, five rounds of each:
 
 It writes the per-second samples and a summary to its output directory, and prints pass or fail.
 
-**The pass mark** (open question 3):
+**The pass mark** (decided as recommended, open question 3):
 
 - **Sustained:** through mitm-proxy, the median of the per-second rates is at least 95% of the
   baseline's, and the 10th percentile is at least 25 Mbit/s (4K streaming services ask for about 15 to
@@ -649,7 +649,8 @@ Deployment is the operator's. What the controller expects, using the example dep
   policies must admit the controller's pods.
 - **Its own port:** one port for the client's proxy entry, reachable only by the intended clients (source
   ranges and a firewall), never open to the rest of the network, since the exits behind it have no
-  authentication. The admin port the same way, or reached through the Kubernetes API's service proxy.
+  authentication, and with `proxy.auth` required (open question 4). The admin port the same way, or
+  reached through the Kubernetes API's service proxy.
 - **Egress policy:** only to the exits' Services and the Kubernetes API (section 9).
 - **Configuration:** a ConfigMap with the settings file, and the rules, services and learned rules as
   separate files (`MITM_PROXY_ROUTING_RULES_FILE` and the others), so a rules change doesn't touch the
@@ -657,7 +658,7 @@ Deployment is the operator's. What the controller expects, using the example dep
 - **Secrets** the controller needs, as files, never environment variables (interpose's `_FILE` and
   `{secret_file: …}` leaves): its CA certificate and key (`MITM_PROXY_CA_CERT_FILE`,
   `MITM_PROXY_CA_KEY_FILE`, a root made for this controller alone), its proxy password
-  (`MITM_PROXY_PROXY_AUTH_FILE`; recommended, open question 4), and exit passwords only for exits that
+  (`MITM_PROXY_PROXY_AUTH_FILE`; required, open question 4), and exit passwords only for exits that
   need them. The VPN providers' logins stay with the exits: the controller chains to them and never needs
   those.
 - **State:** a small volume at `state_dir` for the learning counts and the block log.
@@ -765,17 +766,21 @@ Quick-Start (a two-exit example), and the example configuration.
 
 ## Open questions
 
-Deployment questions are the operator's (section 12). These are about the design:
+Deployment questions are the operator's (section 12). These are about the design. All four were decided
+2026-11-04 by the brain coordinator for Stephen, each as recommended, and are written into the decision
+above.
 
-1. **The name.** `passport`, `waypoint` or `border`? Recommended: **`passport`**, because it says what the
-   controller does (show each site the right country); the settings don't depend on it.
-2. **The stickiness period, and rebinding after a retry.** 30 minutes idle and 12 hours at most, with a
-   binding moving to the exit a successful retry used. Recommended as is: long enough for a film with a
-   pause, short enough that a changed rule applies the same day; and without rebinding, every page of a
-   blocked service pays a block and a retry. The rebinding is shown and expires, and never becomes a rule.
-3. **The throughput pass mark.** Recommended: **as in section 10** (95% of the exit's own rate, 10th
-   percentile 25 Mbit/s, two streams, 5 ms added at the median, 15 ms at the 95th percentile, half a
+1. ~~**The name.** `passport`, `waypoint` or `border`?~~ Decided: **`passport`**, as recommended, because
+   it says what the controller does (show each site the right country); the settings don't depend on it.
+2. ~~**The stickiness period, and rebinding after a retry.**~~ Decided as recommended: 30 minutes idle and
+   12 hours at most, with a binding moving to the exit a successful retry used. Long enough for a film
+   with a pause, short enough that a changed rule applies the same day; without rebinding, every page of a
+   blocked service would pay a block and a retry. The rebinding is shown and expires, and never becomes a
+   rule.
+3. ~~**The throughput pass mark.**~~ Decided as recommended: as in section 10 (95% of the exit's own rate,
+   10th percentile 25 Mbit/s, two streams, 5 ms added at the median, 15 ms at the 95th percentile, half a
    core). The numbers lean on the streaming services' published guidance; tighter would test the exits
    rather than mitm-proxy.
-4. **A password on the controller's port.** Recommended: **yes** (`proxy.auth` from a secret file):
-   unlike the exits, the controller decrypts traffic, so its port deserves more than source ranges.
+4. ~~**A password on the controller's port.**~~ Decided as recommended: **yes**, `proxy.auth` from a
+   secret file is required on a controller deployment (section 12): unlike the exits, the controller
+   decrypts traffic, so its port deserves more than source ranges.
