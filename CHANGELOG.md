@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.4](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.3...v0.3.4) (2026-11-04)
+
+
+### ✨ Features
+
+* **middleware:** built-in capture middleware, buffered (design 0012 step c) ([#34](https://github.com/metalayerlab/mitm-proxy/issues/34)) ([dd36168](https://github.com/metalayerlab/mitm-proxy/commit/dd361680f9bb657aaca9182e7b47d73b037ecfbf))
+
 ## [0.3.3](https://github.com/metalayerlab/mitm-proxy/compare/v0.3.2...v0.3.3) (2026-11-04)
 
 
