@@ -106,7 +106,7 @@ class TokenCounter(Middleware):
 - **No `on_error = "fail"`.** Once a streamed head has gone, a failure can't become a `502`, so `observe_only = True` with `on_error = "fail"` stops startup (`observe_only can't be combined with on_error = 'fail'`).
 - **Mixed flows buffer.** If any middleware that applies isn't observe-only (one that overrides only `on_request` counts too: set `observe_only = True` on it if it never touches a body), the flow buffers as before, and observe-only middleware get each body as one chunk with `is_last=True`: the body as sent, after the other middleware's chunk hooks, wherever they sit in the chain. `body.max_buffer_bytes` applies only to buffered flows.
 - **Framing.** An observe-only middleware is not mutation-capable: a streaming flow keeps the origin's `Content-Length`, and a body of unknown length (chunked, close-delimited, HTTP/2 DATA frames) goes out as it came.
-- **Don't** let a request body stay unread on purpose: a `DENY` or local answer on a streaming flow's head leaves it unread, and an HTTP/1.1 client's connection is then closed after the response, as when an upstream error stops a passed-through body.
+- **Don't** let a request body stay unread on purpose: a `DENY` or local answer on a streaming flow's head leaves it unread. An HTTP/1.1 client's connection is then reused only if the whole unread body had already arrived; otherwise it is closed after the response (the server discards what has arrived but never waits for more), as when an upstream error stops a passed-through body.
 
 ## Actions
 

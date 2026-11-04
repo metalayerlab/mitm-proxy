@@ -419,3 +419,37 @@ def test_a_streaming_body_can_be_read_only_once() -> None:
     with pytest.raises(RuntimeError, match="only be iterated once"):
         body.__aiter__()
     assert not body.is_complete()
+
+
+@pytest.mark.parametrize("whole", [True, False])
+async def test_an_unread_streamed_request_body_and_the_h1_connection(whole: bool) -> None:
+    """A deny on a streaming flow's head leaves the body unread. The HTTP/1.1 server discards
+    what has arrived but never reads more: the connection is reused only if the whole body
+    had come with the head, and closed otherwise."""
+
+    class Deny(Observer):
+        async def on_request(self, flow: Flow) -> Action:
+            return Action.DENY if flow.request.path == "/no" else Action.CONTINUE
+
+    b = bench(Origin())
+    gate = Deny()
+    client = b.proxy(b.context("http/1.1", [("gate", gate)]))
+    head = b"POST /no HTTP/1.1\r\nhost: example.org\r\ncontent-length: 5\r\n\r\n"
+    await client.write(head + b"hello" if whole else head)  # held back: the body never comes
+    await gate.done()
+    received = b""
+    while b"denied by middleware gate\n" not in received:
+        received += await client.read()
+    assert received.startswith(b"HTTP/1.1 403")
+    if not whole:
+        assert await asyncio.wait_for(client.read(), 5) == b""  # closed after the 403
+        await b.close()
+        return
+    await client.write(b"GET /yes HTTP/1.1\r\nhost: example.org\r\n\r\n")  # reused
+    rest = b""
+    while b"hello from origin" not in rest:
+        chunk = await asyncio.wait_for(client.read(), 5)
+        assert chunk, "the connection was closed"
+        rest += chunk
+    assert rest.startswith(b"HTTP/1.1 200")
+    await b.close()
