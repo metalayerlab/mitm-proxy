@@ -30,6 +30,8 @@ Environment=TZ=Europe/London
 # /var/lib/mitm-proxy, the config's default state_dir
 StateDirectory=mitm-proxy
 StateDirectoryMode=0700
+# Relative paths resolve there, as in the image (template-python decision 0009)
+WorkingDirectory=/var/lib/mitm-proxy
 ConfigurationDirectory=mitm-proxy
 UMask=0077
 

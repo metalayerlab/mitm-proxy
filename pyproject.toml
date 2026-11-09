@@ -1,7 +1,11 @@
 [project]
 name = "mitm-proxy"
 # Owned by release-please: never edit by hand (see the wiki's Release-Process page).
+<<<<<<< before updating
 version = "0.3.8"
+=======
+version = "0.0.0"
+>>>>>>> after updating
 description = "Async Python MITM proxy with a self-signed CA — HTTP/1.1 & HTTP/2, pluggable middleware for inspecting and rewriting traffic in flight."
 readme = "README.md"
 requires-python = ">=3.13"
