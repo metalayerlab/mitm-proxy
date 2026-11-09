@@ -79,6 +79,10 @@ RUN mkdir -p /etc/mitm-proxy /var/lib/mitm-proxy \
     && chown mitm-proxy:mitm-proxy /var/lib/mitm-proxy
 COPY contrib/mitm-proxy.example.yaml /usr/share/mitm-proxy/config.example.yaml
 
+# Relative paths resolve in the state directory, never in / (where an old
+# volume such as /config could be read by mistake): template-python decision 0009
+WORKDIR /var/lib/mitm-proxy
+
 # Bind every interface whatever the app's default: in a container, the
 # published ports decide what is reachable, and loopback would be unreachable
 # The proxy listener too (design 0001): project-side addition to the template line above

@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Regenerate the generated sections of docs/wiki/ from the code. Template-owned: template-python.
 
-    uv run scripts/gen-wiki.py           # rewrite the sections
-    uv run scripts/gen-wiki.py --check   # CI: fail if any section is stale
+    uv run scripts/gen-wiki.py           # rewrite the sections and docs/openapi.json
+    uv run scripts/gen-wiki.py --check   # CI: fail if any of them is stale
 
 A generated section sits between markers, and everything between them is replaced:
 
@@ -12,11 +12,16 @@ A generated section sits between markers, and everything between them is replace
 
 Blocks: settings (config.SETTINGS), cli (the Typer app), http-api (the OpenAPI schema).
 Write prose around the markers, never inside them.
+
+docs/openapi.json is the app's OpenAPI schema, committed so a review sees every change to the
+HTTP contract (models included, not just the endpoint table). Its info.version is fixed: the
+schema changes with the code, not with each release (template-python decision 0005).
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import re
 import sys
 from collections.abc import Callable
@@ -24,6 +29,7 @@ from pathlib import Path
 from typing import Any
 
 WIKI = Path("docs/wiki")
+OPENAPI = Path("docs/openapi.json")
 
 
 def _cell(text: object) -> str:
@@ -38,8 +44,23 @@ def settings() -> str:
         "|---|---|---|---|",
     ]
     for s in SETTINGS:
-        # A config.py from before list settings (its src/ is the project's) has no is_list.
+        # A config.py from before list settings (its src/ is the project's) has no is_list, and
+        # one on interpose before v0.4.0 has no is_section.
         is_list = bool(getattr(s, "is_list", False))
+        if getattr(s, "is_section", False):
+            # A section (a YAML mapping, or a list of them) is read from its _FILE (a YAML file)
+            # or the config file, never a plain variable; its default is always empty.
+            kind = "A list of sections" if is_list else "A section"
+            default = "*(empty list)*" if is_list else "*(empty)*"
+            note = f" {kind}: YAML, from the config file or the `_FILE` variable's file."
+            variables = f"`{s.env}_FILE`"
+            # A list section with item fields (interpose v0.4.1) also reads indexed variables.
+            fields: tuple[object, ...] = getattr(s, "fields", ())
+            if is_list and fields:
+                variables += f", or `{s.env}_<N>_<FIELD>`"
+                note += " Or item N's fields as indexed variables, N from 0, each with a `_FILE`."
+            rows.append(f"| `{s.key}` | {variables} | {default} | {_cell(s.help)}{note} |")
+            continue
         empty = "*(empty list)*" if is_list else "*(none)*"
         default = empty if s.default == "" else f"`{s.default}`"
         listed = " A list: YAML, or comma-separated." if is_list else ""
@@ -88,11 +109,22 @@ def _leaves(group: Any, prefix: str) -> list[tuple[str, Any]]:
     return leaves
 
 
-def http_api() -> str:
+def _schema() -> dict[str, Any]:
     from mitm_proxy.api import create_app
     from mitm_proxy.config import load_config
 
-    schema = create_app(load_config(Path("/nonexistent"), environ={})).openapi()
+    schema: dict[str, Any] = create_app(load_config(Path("/nonexistent"), environ={})).openapi()
+    return schema
+
+
+def openapi_json() -> str:
+    schema = _schema()
+    schema["info"]["version"] = "snapshot"  # the contract, not the build: see the docstring
+    return json.dumps(schema, indent=2, ensure_ascii=False) + "\n"
+
+
+def http_api() -> str:
+    schema = _schema()
     rows = ["| Method | Path | Summary |", "|---|---|---|"]
     for path, ops in sorted(schema["paths"].items()):
         for method, op in sorted(ops.items()):
@@ -133,9 +165,15 @@ def main(argv: list[str] | None = None) -> int:
             stale.append(page)
             if not args.check:
                 page.write_text(new, encoding="utf-8")
+    snapshot = openapi_json()
+    if not OPENAPI.is_file() or OPENAPI.read_text(encoding="utf-8") != snapshot:
+        stale.append(OPENAPI)
+        if not args.check:
+            OPENAPI.parent.mkdir(parents=True, exist_ok=True)
+            OPENAPI.write_text(snapshot, encoding="utf-8")
     if args.check and stale:
         for page in stale:
-            print(f"error: {page}: generated section is stale")
+            print(f"error: {page}: generated content is stale")
         print("Run `uv run scripts/gen-wiki.py` and commit the result.")
         return 1
     print(("stale: " if args.check else "updated: ") + (", ".join(map(str, stale)) or "none"))

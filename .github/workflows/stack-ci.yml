@@ -54,9 +54,57 @@ jobs:
           uv run python -c "import mitm_proxy; print('mitm_proxy', mitm_proxy.__version__)"
           uv run mitm-proxy --help > /dev/null
 
-      - name: Generated wiki sections are current
+      - name: Generated wiki sections and docs/openapi.json are current
         if: matrix.python-version == '3.13'
         run: uv run scripts/gen-wiki.py --check
+
+  # docs/openapi.json against the base branch's (the Test job keeps it current): a breaking
+  # change to the HTTP contract fails unless the PR declares it, with `!` in its Conventional
+  # Commit title (`feat!: ...`) or `BREAKING CHANGE:` in its body, so release-please bumps the
+  # major version. Pull requests only (template-python decision 0005).
+  api-breaking:
+    name: Breaking API changes are declared
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install oasdiff
+        env:
+          VERSION: 1.35.0
+          SHA256: a8023002fcb2eaa7f5758148a9303cb63d33b939886df312268bc0fc7b939140
+        run: |
+          mkdir -p "$HOME/.local/bin"
+          curl -fsSL -o "$RUNNER_TEMP/oasdiff.tar.gz" \
+            "https://github.com/oasdiff/oasdiff/releases/download/v$VERSION/oasdiff_${VERSION}_linux_amd64.tar.gz"
+          echo "$SHA256  $RUNNER_TEMP/oasdiff.tar.gz" | sha256sum -c --quiet
+          tar -xzf "$RUNNER_TEMP/oasdiff.tar.gz" -C "$HOME/.local/bin" oasdiff
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
+      - name: Compare docs/openapi.json with the base branch's
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          TITLE: ${{ github.event.pull_request.title }}
+          BODY: ${{ github.event.pull_request.body }}
+        run: |
+          git fetch --quiet --depth=1 origin "$BASE_REF"
+          if ! git cat-file -e FETCH_HEAD:docs/openapi.json 2> /dev/null; then
+            echo "$BASE_REF has no docs/openapi.json yet: nothing to compare"
+            exit 0
+          fi
+          git show FETCH_HEAD:docs/openapi.json > "$RUNNER_TEMP/base-openapi.json"
+          rc=0
+          oasdiff breaking "$RUNNER_TEMP/base-openapi.json" docs/openapi.json --fail-on ERR || rc=$?
+          [ "$rc" -ne 0 ] || exit 0
+          # 1 is "breaking changes found"; anything else is oasdiff failing.
+          [ "$rc" -eq 1 ] || { echo "::error::oasdiff failed (exit $rc)"; exit "$rc"; }
+          if printf '%s\n' "$TITLE" | grep -qE '^[a-z]+(\([^)]*\))?!:' \
+              || printf '%s\n' "$BODY" | grep -q '^BREAKING[ -]CHANGE:'; then
+            echo "::warning::Breaking API change, declared by this PR: release-please bumps the major version"
+            exit 0
+          fi
+          echo "::error::Breaking API change: make it compatible, or declare it (feat!: in the PR title, or BREAKING CHANGE: in its body)"
+          exit 1
 
   markdown:
     name: Markdown lint
