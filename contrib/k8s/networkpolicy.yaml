@@ -17,6 +17,19 @@ spec:
               kubernetes.io/metadata.name: traefik
       ports:
         - {port: 8080, protocol: TCP}
+<<<<<<< before updating
+=======
+    # A Prometheus scraper: the service serves /metrics on this port (template-python's
+    # decision 0007). Uncomment, and name the scraper's namespace.
+    # - from:
+    #     - namespaceSelector:
+    #         matchLabels:
+    #           kubernetes.io/metadata.name: monitoring
+    #   ports:
+    #     - {port: 8080, protocol: TCP}
+    # The extra ports (extra_ports) usually serve in-cluster clients, not the
+    # ingress controller, so nothing may reach them yet. Uncomment, and say who.
+>>>>>>> after updating
     # - from:
     #     - namespaceSelector:
     #         matchLabels:
