@@ -7,17 +7,17 @@ Python >= 3.13 with uv: always `uv run`, never `pip install` or activate the ven
 
 ## Don't read
 
-`uv.lock` (use `uv tree --depth 1`), `CHANGELOG.md` (use `git log`), `.venv/`, `htmlcov/`, `.coverage`, `.mypy_cache/`, `.ruff_cache/`, `.pytest_cache/`; generated wiki blocks (`<!-- generated:start/end -->`).
+`uv.lock` (use `uv tree --depth 1`), `CHANGELOG.md` (use `git log`), `.venv/`, `htmlcov/`, `.coverage`, `.mypy_cache/`, `.ruff_cache/`, `.pytest_cache/`; generated wiki blocks (`<!-- generated:start/end -->`), `docs/openapi.json`.
 
 ## Commands
 
 | Task | Command |
 |---|---|
 | Install / add | `uv sync` / `uv add <pkg>` (dev: `--dev`) |
-| Lint, format | `uv run ruff check --fix`, `uv run ruff format` |
+| Lint, format | `uv run ruff check --fix`, `uv run ruff format` (also the `python` code blocks in `*.md`: design records' sketches too) |
 | Types (strict) | `uv run mypy` |
 | Tests (80% floor) / integration | `uv run pytest` / `RUN_INTEGRATION=1 uv run pytest -m integration --no-cov` |
-| Wiki sections | `uv run scripts/gen-wiki.py` |
+| Wiki sections, `docs/openapi.json` | `uv run scripts/gen-wiki.py` |
 | Run | `uv run mitm-proxy --help` |
 
 ## Repository map
